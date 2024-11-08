@@ -8,11 +8,13 @@
 
 The OpenWebUI integration adds a conversation agent powered by [OpenWebUI][openwebui] in Home Assistant.
 
-This conversation agent is unable to control your house. The OpenWebUI conversation agent can be used in automations, but not as a [sentence trigger][sentence-trigger]. It can only query information that has been provided by Home Assistant. To be able to answer questions about your house, Home Assistant will need to provide OpenWebUI with the details of your house, which include areas, devices and their states.
+This conversation agent is unable to control your house. The OpenWebUI conversation agent can be used in automations, but not as a [sentence trigger][sentence-trigger]. If you'd like house control and sentence triggers, using this in conjunction with the [Fallback Conversation Agent][fallback-conversation-agent] is recommended: Set the standard Assist engine as your main Assistant, and this integration as your Fallback.
+
+This conversation agent can search the internet for you, using sentence triggers you can configure, if Web Search is set up in OpenWebUI. For more details, see the relevant Options section below.
 
 ## Installation
 
-To install the __OpenWebUI Conversation__ integration to your Home Assistant instance, use this My button:
+To install the **OpenWebUI Conversation** integration to your Home Assistant instance, use this My button:
 
 [![Open your Home Assistant instance and open a repository inside the Home Assistant Community Store.](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=therealpsv&repository=ha-openwebui-conversation&category=integration)
 
@@ -24,9 +26,9 @@ If the above My button doesn’t work, you can also perform the following steps 
 * Add custom repository.
   * Repository is `TheRealPSV/ha-openwebui-conversation`.
   * Category is `Integration`.
-* Click ___Explore & Download Repositories___.
+* Click ***Explore & Download Repositories***.
 * From the list, select OpenWebUI Conversation.
-* In the bottom right corner, click the ___Download___ button.
+* In the bottom right corner, click the ***Download*** button.
 * Follow the instructions on screen to complete the installation.
 
 #### Note:
@@ -34,9 +36,14 @@ HACS does not "configure" the integration for you, You must add OpenWebUI Conver
 
 * Browse to your Home Assistant instance.
 * Go to Settings > Devices & Services.
-* In the bottom right corner, select the ___Add Integration___ button.
+* In the bottom right corner, select the ***Add Integration*** button.
 * From the list, select OpenWebUI Conversation.
 * Follow the instructions on screen to complete the setup.
+  * **Service Name** is required, but you can name it whatever you like.
+  * **Base Url** is the URL for the OpenWebUI service.
+  * **API Key** is the API key for your user, which you can find in your OpenWebUI Settings, under Account.
+  * **API Timeout** is described below under General Settings.
+* Once you have added the integration, make sure you set your preferred model as described below.
 
 ## Options
 Options for OpenWebUI Conversation can be set via the user interface, by taking the following steps:
@@ -44,21 +51,33 @@ Options for OpenWebUI Conversation can be set via the user interface, by taking 
 * Browse to your Home Assistant instance.
 * Go to Settings > Devices & Services.
 * If multiple instances of OpenWebUI Conversation are configured, choose the instance you want to configure.
-* Select the integration, then select ___Configure___.
+* Select the integration, then select ***Configure***.
 
 #### General Settings
 Settings relating to the integration itself.
 
-| Option      | Description                                                               |
-| ----------- | ------------------------------------------------------------------------- |
-| API Timeout | The maximum amount of time to wait for a response from the API in seconds |
+| Option        | Description                                                                                                                      |
+| ------------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| API Timeout   | The maximum amount of time (in seconds) to wait for a response from the API                                                      |
+| Language Code | The code for your preferred language. This is set to English (`en`) by default. A list of codes can be found [here][lang-codes]. |
 
 #### Model Configuration
-The language model and additional parameters to fine tune the responses.
+The language model you want to use.
 
-| Option | Description                          |
-| ------ | ------------------------------------ |
-| Model  | The model used to generate response. |
+| Option | Description                           |
+| ------ | ------------------------------------- |
+| Model  | The model used to generate responses. |
+
+#### Search Configuration
+Options related to performing a web search with OpenWebUI. The agent will perform a web search through OpenWebUI and have the model summarize the results.
+
+| Option                        | Description                                                                                                                                                                                                                                                                           |
+| ----------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Search Enabled                | Whether or not the conversation agent should perform web searches when the given sentences are triggered.                                                                                                                                                                             |
+| Search Trigger Sentences      | Sentence triggers that tell the conversation agent to search the web for something. One sentence per line. These sentences use the same syntax as Home Assistant's standard trigger sentences, but must contain `{query}` once in each sentence. Some default sentences are provided. |
+| Search Results Message Prefix | Text prepended to the search response that indicates a search was performed. A default prefix is provided.                                                                                                                                                                            |
+
+To enable web search in OpenWebUI, see [OpenWebUI's documentation on Web Search][openwebui-search].
 
 ## Attributions:
 This integration is based on the [hass-ollama-conversation][hass-ollama-conversation] repo.
@@ -68,3 +87,6 @@ This integration is based on the [hass-ollama-conversation][hass-ollama-conversa
 [openwebui]: https://openwebui.com/
 [sentence-trigger]: https://www.home-assistant.io/docs/automation/trigger/#sentence-trigger
 [hass-ollama-conversation]: https://github.com/ej52/hass-ollama-conversation/
+[fallback-conversation-agent]: https://github.com/m50/ha-fallback-conversation
+[lang-codes]: https://developers.home-assistant.io/docs/voice/intent-recognition/supported-languages/
+[openwebui-search]: https://docs.openwebui.com/features/web_search
