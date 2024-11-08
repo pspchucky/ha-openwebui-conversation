@@ -1,0 +1,16 @@
+{
+  "domain": "openwebui_conversation",
+  "name": "OpenWebUI Conversation",
+  "codeowners": [
+    "@TheRealPSV"
+  ],
+  "config_flow": true,
+  "dependencies": [
+    "conversation"
+  ],
+  "documentation": "https://github.com/TheRealPSV/ha-openwebui-conversation#options",
+  "integration_type": "service",
+  "iot_class": "cloud_polling",
+  "issue_tracker": "https://github.com/TheRealPSV/ha-openwebui-conversation/issues",
+  "version": "1.0.0"
+}
