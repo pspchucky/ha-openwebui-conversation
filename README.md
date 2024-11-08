@@ -19,7 +19,7 @@ To install the **OpenWebUI Conversation** integration to your Home Assistant ins
 [![Open your Home Assistant instance and open a repository inside the Home Assistant Community Store.](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=therealpsv&repository=ha-openwebui-conversation&category=integration)
 
 #### Manual Installation
-If the above My button doesn’t work, you can also perform the following steps manually:
+If the above button doesn’t work, you can also perform the following steps manually:
 
 * Browse to your Home Assistant instance.
 * Go to HACS > Integrations > Custom Repositories.
