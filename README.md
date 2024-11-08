@@ -66,7 +66,9 @@ The language model you want to use.
 
 | Option | Description                           |
 | ------ | ------------------------------------- |
-| Model  | The model used to generate responses. |
+| Model  | The model used to generate responses. This list should automatically populate based on the models you have created in OpenWebUI. |
+
+NOTE: Model properties should be specified on the model itself in your workspace in OpenWebUI itself.
 
 #### Search Configuration
 Options related to performing a web search with OpenWebUI. The agent will perform a web search through OpenWebUI and have the model summarize the results.
