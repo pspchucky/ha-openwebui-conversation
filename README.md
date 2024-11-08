@@ -1,6 +1,6 @@
 [![GitHub Release](https://img.shields.io/github/release/TheRealPSV/ha-openwebui-conversation.svg?style=flat-square)](https://github.com/TheRealPSV/ha-openwebui-conversation/releases)
 [![Downloads](https://img.shields.io/github/downloads/TheRealPSV/ha-openwebui-conversation/total?style=flat-square)](https://github.com/TheRealPSV/ha-openwebui-conversation/releases)
-[![Build Status](https://img.shields.io/github/actions/workflow/status/TheRealPSV/ha-openwebui-conversation/validate.yml?style=flat-square)](https://github.com/TheRealPSV/ha-openwebui-conversation/actions/workflows/validate.yaml)
+[![Build Status](https://img.shields.io/github/actions/workflow/status/TheRealPSV/ha-openwebui-conversation/validate.yml?style=flat-square)](https://github.com/TheRealPSV/ha-openwebui-conversation/actions/workflows/validate.yml)
 [![License](https://img.shields.io/github/license/TheRealPSV/ha-openwebui-conversation.svg?style=flat-square)](LICENSE)
 [![hacs](https://img.shields.io/badge/HACS-default-orange.svg?style=flat-square)](https://hacs.xyz)
 
