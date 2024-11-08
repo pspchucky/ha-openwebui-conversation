@@ -6,6 +6,7 @@
   ],
   "config_flow": true,
   "dependencies": [
+    "assist_pipeline",
     "conversation"
   ],
   "documentation": "https://github.com/TheRealPSV/ha-openwebui-conversation#options",
