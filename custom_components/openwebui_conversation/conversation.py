@@ -243,7 +243,7 @@ class OpenWebUIAgent(
         generated_output = await self.client.async_generate(
             {
                 "stream": False,
-                "model": "jarvis",
+                "model": model_id,
                 "messages": [{"role": "user", "content": search_query}],
                 "options": {},
                 "keep_alive": "-1m",

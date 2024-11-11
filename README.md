@@ -12,6 +12,8 @@ This conversation agent is unable to control your house. The OpenWebUI conversat
 
 This conversation agent can search the internet for you, using sentence triggers you can configure, if Web Search is set up in OpenWebUI. For more details, see the relevant Options section below.
 
+You can also take advantage of OpenWebUI's ability to "clone" models; once you create a clone model in OpenWebUI, it will automatically be available to select in the integration's options.
+
 ## Installation
 
 To install the **OpenWebUI Conversation** integration to your Home Assistant instance, use this My button:
@@ -64,8 +66,8 @@ Settings relating to the integration itself.
 #### Model Configuration
 The language model you want to use.
 
-| Option | Description                           |
-| ------ | ------------------------------------- |
+| Option | Description                                                                                                                      |
+| ------ | -------------------------------------------------------------------------------------------------------------------------------- |
 | Model  | The model used to generate responses. This list should automatically populate based on the models you have created in OpenWebUI. |
 
 NOTE: Model properties should be specified on the model itself in your workspace in OpenWebUI itself.
