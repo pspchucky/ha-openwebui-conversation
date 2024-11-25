@@ -5,19 +5,16 @@ from __future__ import annotations
 from typing import Literal
 
 from hassil import recognize
-from hassil.intents import Intents, WildcardSlotList
+from hassil.intents import Intents
 
 from homeassistant.components import assist_pipeline, conversation
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import MATCH_ALL, Platform
-from homeassistant.core import HomeAssistant, callback
+from homeassistant.const import MATCH_ALL
+from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import (
-    ConfigEntryNotReady,
     HomeAssistantError,
-    TemplateError,
 )
 from homeassistant.helpers import intent
-from homeassistant.helpers.typing import ConfigType
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.util import ulid
@@ -26,10 +23,8 @@ import json
 
 from .api import OpenWebUIApiClient
 from .const import (
-    DOMAIN,
     LOGGER,
     DO_SEARCH_INTENT,
-    CONF_SERVICE_NAME,
     CONF_BASE_URL,
     CONF_API_KEY,
     CONF_TIMEOUT,
@@ -45,7 +40,7 @@ from .const import (
     DEFAULT_SEARCH_SENTENCES,
     DEFAULT_SEARCH_RESULT_PREFIX,
 )
-from .exceptions import ApiClientError, ApiCommError, ApiJsonError, ApiTimeoutError
+from .exceptions import ApiCommError, ApiJsonError, ApiTimeoutError
 from .message import Message
 
 

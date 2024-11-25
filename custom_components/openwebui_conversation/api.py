@@ -8,7 +8,6 @@ import socket
 import aiohttp
 import async_timeout
 
-from .const import LOGGER
 from .exceptions import ApiClientError, ApiCommError, ApiJsonError, ApiTimeoutError
 
 
