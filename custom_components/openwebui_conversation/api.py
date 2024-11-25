@@ -8,6 +8,7 @@ import socket
 import aiohttp
 import async_timeout
 
+from .const import LOGGER
 from .exceptions import ApiClientError, ApiCommError, ApiJsonError, ApiTimeoutError
 
 
@@ -50,7 +51,7 @@ class OpenWebUIApiClient:
         """Generate a completion from the API."""
         return await self._api_wrapper(
             method="post",
-            url=f"{self._base_url}/api/task/query/completions",
+            url=f"{self._base_url}/api/task/queries/completions",
             data=data,
             headers={
                 "Content-type": "application/json; charset=UTF-8",
