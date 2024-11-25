@@ -249,19 +249,21 @@ class OpenWebUIAgent(
                 "type": "web_search",
             }
         )
-        generated_query_string = json.loads(
-            generated_query["choices"][0]["message"]["content"]
-        )["queries"][0]
-
-        LOGGER.error(generated_query_string)
+        generated_query_string = generated_query["choices"][0]["message"]["content"]
+        try:
+            generated_query_string_first = json.loads(generated_query_string)[
+                "queries"
+            ][0]
+        except json.JSONDecodeError:
+            generated_query_string_first = generated_query_string
 
         search_results = await self.client.async_perform_search(
             {
-                "query": generated_query_string,
+                "query": generated_query_string_first,
                 "collection_name": "",
             }
         )
-        LOGGER.error(search_results)
+
         search_results_collection = search_results["collection_name"]
         search_results_filenames = search_results["filenames"]
 
