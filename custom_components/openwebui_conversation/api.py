@@ -45,36 +45,6 @@ class OpenWebUIApiClient:
             },
         )
 
-    async def async_generate_search_query(
-        self,
-        data: dict | None = None,
-    ) -> any:
-        """Generate a completion from the API."""
-        return await self._api_wrapper(
-            method="post",
-            url=f"{self._base_url}/api/task/queries/completions",
-            data=data,
-            headers={
-                "Content-type": "application/json; charset=UTF-8",
-                "Authorization": f"Bearer {self._api_key}",
-            },
-        )
-
-    async def async_perform_search(
-        self,
-        data: dict | None = None,
-    ) -> any:
-        """Generate a completion from the API."""
-        return await self._api_wrapper(
-            method="post",
-            url=f"{self._base_url}/retrieval/api/v1/process/web/search",
-            data=data,
-            headers={
-                "Content-type": "application/json; charset=UTF-8",
-                "Authorization": f"Bearer {self._api_key}",
-            },
-        )
-
     async def async_generate(
         self,
         data: dict | None = None,
@@ -82,7 +52,7 @@ class OpenWebUIApiClient:
         """Generate a completion from the API."""
         return await self._api_wrapper(
             method="post",
-            url=f"{self._base_url}/ollama/api/chat",
+            url=f"{self._base_url}/api/chat/completions",
             data=data,
             headers={
                 "Content-type": "application/json; charset=UTF-8",

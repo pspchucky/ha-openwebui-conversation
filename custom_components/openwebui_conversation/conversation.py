@@ -66,6 +66,7 @@ class OpenWebUIAgent(
         """Initialize the agent."""
         self.hass = hass
         self.entry = entry
+        self.timeout = entry.options.get(CONF_TIMEOUT, DEFAULT_TIMEOUT)
         self.client = OpenWebUIApiClient(
             base_url=entry.data[CONF_BASE_URL],
             api_key=entry.data[CONF_API_KEY],
@@ -152,11 +153,7 @@ class OpenWebUIAgent(
                     should_search = True
 
         try:
-            response = None
-            if should_search:
-                response = await self.search(prompt, conversation_history)
-            else:
-                response = await self.query(prompt, conversation_history)
+            response = await self.query(prompt, conversation_history, should_search == True)
         except (ApiCommError, ApiJsonError, ApiTimeoutError) as err:
             LOGGER.error("Error generating prompt: %s", err)
             intent_response = intent.IntentResponse(language=user_input.language)
@@ -178,7 +175,7 @@ class OpenWebUIAgent(
                 response=intent_response, conversation_id=conversation_id
             )
 
-        response_data = response["message"]["content"]
+        response_data = response["choices"][0]["message"]["content"]
         if should_search:
             response_data = f"{self.search_result_prefix} {response_data}"
         response_message = Message("assistant", response_data)
@@ -194,7 +191,7 @@ class OpenWebUIAgent(
             response=intent_response, conversation_id=conversation_id
         )
 
-    async def query(self, prompt: str, history: list[Message]) -> any:
+    async def query(self, prompt: str, history: list[Message], search: bool) -> any:
         """Process a sentence."""
         model = self.entry.options.get(CONF_MODEL, DEFAULT_MODEL)
 
@@ -205,92 +202,21 @@ class OpenWebUIAgent(
 
         result = await self.client.async_generate(
             {
+                "features": {
+                    "web_search": search
+                },
                 "model": model,
                 "messages": message_list,
+                "params": {
+                    "keep_alive": "-1m"
+                },
                 "stream": False,
             }
         )
 
-        response: str = result["message"]["content"]
+        response: str = result["choices"][0]["message"]["content"]
         LOGGER.debug("Response %s", response)
         return result
-
-    async def search(self, prompt: str, history: list[Message]) -> any:
-        model_id = self.entry.options.get(CONF_MODEL, DEFAULT_MODEL)
-
-        search_query = prompt
-
-        LOGGER.debug("Search for %s: %s", model_id, search_query)
-
-        initial_message_list = [
-            {
-                "id": None,
-                "parentId": None,
-                "childrenIds": [],
-                "role": x.role,
-                "content": x.message,
-                "models": [model_id],
-            }
-            for x in history
-        ]
-        initial_message_list.append(
-            {
-                "id": None,
-                "parentId": None,
-                "childrenIds": [],
-                "role": "user",
-                "content": search_query,
-                "models": [model_id],
-            }
-        )
-
-        generated_query = await self.client.async_generate_search_query(
-            {
-                "model": model_id,
-                "messages": initial_message_list,
-                "prompt": search_query,
-                "type": "web_search",
-            }
-        )
-        generated_query_string = generated_query["choices"][0]["message"]["content"]
-        try:
-            generated_query_string_first = json.loads(generated_query_string)[
-                "queries"
-            ][0]
-        except json.JSONDecodeError:
-            generated_query_string_first = generated_query_string
-
-        search_results = await self.client.async_perform_search(
-            {
-                "query": generated_query_string_first,
-                "collection_name": "",
-            }
-        )
-
-        search_results_collection = search_results["collection_name"]
-        search_results_filenames = search_results["filenames"]
-
-        message_list = [{"role": x.role, "content": x.message} for x in history]
-        message_list.append({"role": "user", "content": search_query})
-
-        generated_output = await self.client.async_generate(
-            {
-                "stream": False,
-                "model": model_id,
-                "messages": message_list,
-                "options": {},
-                "keep_alive": "-1m",
-                "files": [
-                    {
-                        "collection_name": search_results_collection,
-                        "name": generated_query_string,
-                        "type": "web_search_results",
-                        "urls": search_results_filenames,
-                    }
-                ],
-            }
-        )
-        return generated_output
 
     async def _async_entry_update_listener(
         self, hass: HomeAssistant, entry: ConfigEntry
