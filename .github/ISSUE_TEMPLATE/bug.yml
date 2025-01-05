@@ -12,6 +12,12 @@ body:
     description: "Paste the data from the System Health card in Home Assistant (https://www.home-assistant.io/more-info/system-health#github-issues)"
   validations:
     required: true
+- type: input
+  attributes:
+    label: "Open WebUI version"
+    description: "Version of Open WebUI"
+  validations:
+    required: true
 - type: checkboxes
   attributes:
     label: Checklist
