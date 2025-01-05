@@ -235,6 +235,15 @@ def openwebui_schema_general_config(options: MappingProxyType[str, Any]) -> dict
             },
             default=DEFAULT_LANGUAGE_CODE,
         ): TextSelector(TextSelectorConfig(multiline=False)),
+        vol.Required(
+            CONF_VERIFY_SSL,
+            description={
+                "suggested_value": options.get(
+                    CONF_VERIFY_SSL, DEFAULT_VERIFY_SSL
+                )
+            },
+            default=DEFAULT_VERIFY_SSL,
+        ): BooleanSelector(BooleanSelectorConfig())
     }
 
 

@@ -34,7 +34,8 @@
                 "title": "General Settings",
                 "data": {
                     "timeout": "API Timeout",
-                    "lang_code": "Language Code"
+                    "lang_code": "Language Code",
+                    "verify_ssl": "Verify SSL"
                 }
             },
             "model_config": {
