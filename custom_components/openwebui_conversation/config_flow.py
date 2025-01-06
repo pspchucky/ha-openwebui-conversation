@@ -38,6 +38,7 @@ from .const import (
     CONF_SEARCH_ENABLED,
     CONF_SEARCH_SENTENCES,
     CONF_SEARCH_RESULT_PREFIX,
+    CONF_STRIP_MARKDOWN,
     CONF_VERIFY_SSL,
     DEFAULT_SERVICE_NAME,
     DEFAULT_BASE_URL,
@@ -47,6 +48,7 @@ from .const import (
     DEFAULT_SEARCH_ENABLED,
     DEFAULT_SEARCH_SENTENCES,
     DEFAULT_SEARCH_RESULT_PREFIX,
+    DEFAULT_STRIP_MARKDOWN,
     DEFAULT_VERIFY_SSL,
 )
 from .exceptions import ApiClientError, ApiCommError, ApiTimeoutError
@@ -73,6 +75,7 @@ DEFAULT_OPTIONS = types.MappingProxyType(
         CONF_SEARCH_ENABLED: DEFAULT_SEARCH_ENABLED,
         CONF_SEARCH_SENTENCES: DEFAULT_SEARCH_SENTENCES,
         CONF_SEARCH_RESULT_PREFIX: DEFAULT_SEARCH_RESULT_PREFIX,
+        CONF_STRIP_MARKDOWN: DEFAULT_STRIP_MARKDOWN,
     }
 )
 
@@ -266,7 +269,16 @@ def openwebui_schema_model_config(
                 translation_key=CONF_MODEL,
                 sort=True,
             )
-        )
+        ),
+        vol.Required(
+            CONF_STRIP_MARKDOWN,
+            description={
+                "suggested_value": options.get(
+                    CONF_STRIP_MARKDOWN, DEFAULT_STRIP_MARKDOWN
+                )
+            },
+            default=DEFAULT_STRIP_MARKDOWN,
+        ): BooleanSelector(BooleanSelectorConfig())
     }
 
 

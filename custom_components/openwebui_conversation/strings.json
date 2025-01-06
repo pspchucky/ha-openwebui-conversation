@@ -41,7 +41,8 @@
             "model_config": {
                 "title": "Model Configuration",
                 "data": {
-                    "chat_model": "Model"
+                    "chat_model": "Model",
+                    "strip_markdown": "Strip Markdown"
                 }
             },
             "search_config": {

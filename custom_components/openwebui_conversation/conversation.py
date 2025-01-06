@@ -19,7 +19,8 @@ from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.util import ulid
 
-import json
+from markdown_it import MarkdownIt
+from mdit_plain.renderer import RendererPlain
 
 from .api import OpenWebUIApiClient
 from .const import (
@@ -33,6 +34,7 @@ from .const import (
     CONF_SEARCH_ENABLED,
     CONF_SEARCH_SENTENCES,
     CONF_SEARCH_RESULT_PREFIX,
+    CONF_STRIP_MARKDOWN,
     CONF_VERIFY_SSL,
     DEFAULT_TIMEOUT,
     DEFAULT_MODEL,
@@ -40,6 +42,7 @@ from .const import (
     DEFAULT_SEARCH_ENABLED,
     DEFAULT_SEARCH_SENTENCES,
     DEFAULT_SEARCH_RESULT_PREFIX,
+    DEFAULT_STRIP_MARKDOWN,
     DEFAULT_VERIFY_SSL,
 )
 from .exceptions import ApiCommError, ApiJsonError, ApiTimeoutError
@@ -91,6 +94,10 @@ class OpenWebUIAgent(
         self.lang = entry.options.get(CONF_LANGUAGE_CODE, DEFAULT_LANGUAGE_CODE).strip()
         self._attr_name = entry.title
         self._attr_unique_id = entry.entry_id
+        self.strip_markdown = entry.options.get(
+            CONF_STRIP_MARKDOWN, DEFAULT_STRIP_MARKDOWN
+        )
+        self.markdown_parser = MarkdownIt(renderer_cls=RendererPlain)
 
     @property
     def supported_languages(self) -> list[str] | Literal["*"]:
@@ -153,7 +160,9 @@ class OpenWebUIAgent(
                     should_search = True
 
         try:
-            response = await self.query(prompt, conversation_history, should_search == True)
+            response = await self.query(
+                prompt, conversation_history, should_search == True
+            )
         except (ApiCommError, ApiJsonError, ApiTimeoutError) as err:
             LOGGER.error("Error generating prompt: %s", err)
             intent_response = intent.IntentResponse(language=user_input.language)
@@ -176,6 +185,8 @@ class OpenWebUIAgent(
             )
 
         response_data = response["choices"][0]["message"]["content"]
+        if self.strip_markdown:
+            response_data = self.markdown_parser.render(response_data)
         if should_search:
             response_data = f"{self.search_result_prefix} {response_data}"
         response_message = Message("assistant", response_data)
@@ -202,14 +213,10 @@ class OpenWebUIAgent(
 
         result = await self.client.async_generate(
             {
-                "features": {
-                    "web_search": search
-                },
+                "features": {"web_search": search},
                 "model": model,
                 "messages": message_list,
-                "params": {
-                    "keep_alive": "-1m"
-                },
+                "params": {"keep_alive": "-1m"},
                 "stream": False,
             }
         )

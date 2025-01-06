@@ -68,9 +68,10 @@ Settings relating to the integration itself.
 #### Model Configuration
 The language model you want to use.
 
-| Option | Description                                                                                                                      |
-| ------ | -------------------------------------------------------------------------------------------------------------------------------- |
-| Model  | The model used to generate responses. This list should automatically populate based on the models you have created in OpenWebUI. |
+| Option         | Description                                                                                                                                                                                                                                                                                |
+| -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Model          | The model used to generate responses. This list should automatically populate based on the models you have created in OpenWebUI.                                                                                                                                                           |
+| Strip Markdown | Whether or not to strip Markdown formatting from the model's output. This can be useful for models that tend to generate responses with Markdown formatting, as HomeAssistant doesn't render Markdown text, and TTS engines will often read out individual Markdown formatting characters. |
 
 NOTE: Model properties should be specified on the model itself in your workspace in OpenWebUI itself.
 
