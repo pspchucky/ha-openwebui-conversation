@@ -34,9 +34,9 @@ class OpenWebUIApiClient:
         response = await self._api_wrapper(method="get", url=f"{self._base_url}/health")
         return response["status"] == True
 
-    async def async_get_models(self) -> any:
+    async def async_get_models(self) -> list[dict]:
         """Get models from the API."""
-        return await self._api_wrapper(
+        response = await self._api_wrapper(
             method="get",
             url=f"{self._base_url}/api/models",
             headers={
@@ -44,6 +44,7 @@ class OpenWebUIApiClient:
                 "Authorization": f"Bearer {self._api_key}",
             },
         )
+        return response.get("data", [])
 
     async def async_generate(
         self,

@@ -211,12 +211,21 @@ class OpenWebUIAgent(
         message_list = [{"role": x.role, "content": x.message} for x in history]
         message_list.append({"role": "user", "content": prompt})
 
+        # Fetch model metadata
+        models = await self.client.async_get_models()
+        matching_model = next((m for m in models if m["id"] == model), {})
+        tool_ids = matching_model.get("info", {}).get("meta", {}).get("toolIds", [])
+
+        LOGGER.debug("Using tool_ids for model %s: %s", model, tool_ids)
+
         result = await self.client.async_generate(
             {
                 "features": {"web_search": search},
+                "tool_ids": tool_ids,
                 "model": model,
                 "messages": message_list,
                 "params": {"keep_alive": "-1m"},
+                "options": {"keep_alive": -1},
                 "stream": False,
             }
         )

@@ -192,8 +192,7 @@ class OpenWebUIOptionsFlow(config_entries.OptionsFlow):
                 session=async_create_clientsession(self.hass),
                 verify_ssl=self.config_entry.options.get(CONF_VERIFY_SSL, DEFAULT_VERIFY_SSL),
             )
-            response = await client.async_get_models()
-            models = response["data"]
+            models = await client.async_get_models()
         except ApiClientError as exception:
             LOGGER.exception("Unexpected exception: %s", exception)
             models = []
