@@ -48,6 +48,7 @@ from .const import (
 from .exceptions import ApiCommError, ApiJsonError, ApiTimeoutError
 from .message import Message
 
+TOOL_ID_CACHE: dict[str, list[str]] = {}
 
 async def async_setup_entry(
     hass: HomeAssistant, entry: ConfigEntry, async_add_entities: AddEntitiesCallback
@@ -212,9 +213,13 @@ class OpenWebUIAgent(
         message_list.append({"role": "user", "content": prompt})
 
         # Fetch model metadata
-        models = await self.client.async_get_models()
-        matching_model = next((m for m in models if m["id"] == model), {})
-        tool_ids = matching_model.get("info", {}).get("meta", {}).get("toolIds", [])
+        tool_ids = TOOL_ID_CACHE.get(model)
+        if tool_ids is None:
+            LOGGER.debug("Caching tool_ids for model %s: %s", model, tool_ids)
+            models = await self.client.async_get_models()
+            matching_model = next((m for m in models if m["id"] == model), {})
+            tool_ids = matching_model.get("info", {}).get("meta", {}).get("toolIds", [])
+            TOOL_ID_CACHE[model] = tool_ids
 
         LOGGER.debug("Using tool_ids for model %s: %s", model, tool_ids)
 
