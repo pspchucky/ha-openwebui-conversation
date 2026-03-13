@@ -32,7 +32,7 @@ class OpenWebUIApiClient:
     async def async_get_heartbeat(self) -> bool:
         """Get heartbeat from the API."""
         response = await self._api_wrapper(method="get", url=f"{self._base_url}/health")
-        return response["status"] == True
+        return response["status"]
 
     async def async_get_models(self) -> list[dict]:
         """Get models from the API."""

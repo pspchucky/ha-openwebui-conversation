@@ -162,7 +162,7 @@ class OpenWebUIAgent(
 
         try:
             response = await self.query(
-                prompt, conversation_history, should_search == True
+                prompt, conversation_history, should_search
             )
         except (ApiCommError, ApiJsonError, ApiTimeoutError) as err:
             LOGGER.error("Error generating prompt: %s", err)

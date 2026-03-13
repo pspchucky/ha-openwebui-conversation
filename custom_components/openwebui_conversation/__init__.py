@@ -1,40 +1,26 @@
-"""Custom integration to integrate openwebui_conversation with Home Assistant.
-"""
+"""Custom integration to integrate openwebui_conversation with Home Assistant."""
 
 from __future__ import annotations
 
-from typing import Literal
-
 from homeassistant.components import conversation as haconversation
-from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import MATCH_ALL, Platform
+from homeassistant.config_entries import ConfigEntry, ConfigEntryNotReady
+from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant
-from homeassistant.exceptions import (
-    ConfigEntryNotReady,
-    HomeAssistantError,
-    TemplateError,
-)
-from homeassistant.helpers import intent, template
-from homeassistant.helpers.typing import ConfigType
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
-from homeassistant.util import ulid
 
 from .api import OpenWebUIApiClient
 from .const import (
     DOMAIN,
-    LOGGER,
     CONF_BASE_URL,
     CONF_API_KEY,
     CONF_TIMEOUT,
-    CONF_MODEL,
     CONF_VERIFY_SSL,
     DEFAULT_TIMEOUT,
-    DEFAULT_MODEL,
     DEFAULT_VERIFY_SSL,
 )
 from .conversation import OpenWebUIAgent
 from .coordinator import OpenWebUIDataUpdateCoordinator
-from .exceptions import ApiClientError, ApiCommError, ApiJsonError, ApiTimeoutError
+from .exceptions import ApiClientError
 
 PLATFORMS = (Platform.CONVERSATION,)
 
