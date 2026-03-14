@@ -6,13 +6,30 @@
 
 # OpenWebUI Conversation
 
+This fork adds local Home Assistant action execution on top of the upstream OpenWebUI conversation flow.
+
 The OpenWebUI integration adds a conversation agent powered by [OpenWebUI][openwebui] in Home Assistant.
 
-This conversation agent is unable to control your house. The OpenWebUI conversation agent can be used in automations, but not as a [sentence trigger][sentence-trigger]. If you'd like house control and sentence triggers, Home Assistant's "Prefer handling commands locally" option is recommended: Set the standard Assist engine as your main Assistant, and in the Assistant configuration, under the Conversation Agent, just make sure the "Prefer handling commands locally" option is enabled. This will use Home Assistant triggers by default, and fall back to this integration if a trigger isn't matched.
+Unlike the upstream project, this fork can execute supported Home Assistant actions locally when the model returns either native `tool_calls` or a prompt-style JSON tool plan in `message.content`.
+
+Supported local tools:
+
+* `home_assistant_tool/control_lights`
+* `home_assistant_tool/control_switches`
+* `home_assistant_tool/media_player_command`
+* `home_assistant_tool/climate_set_temperature`
+* `home_assistant_tool/wait`
+
+This makes multi-step local sequences possible, including patterns like "turn on the middle bedroom lights, wait 5 seconds, then turn them off", as long as the model returns the tool calls in order.
 
 This conversation agent can search the internet for you, using sentence triggers you can configure, if Web Search is set up in OpenWebUI. For more details, see the relevant Options section below.
 
 You can also take advantage of OpenWebUI's ability to "clone" models; once you create a clone model in OpenWebUI, it will automatically be available to select in the integration's options.
+
+For best results with local tool execution, use an OpenWebUI model/workspace that either:
+
+* has **Native Tool Calling** enabled, or
+* returns a JSON object in `message.content` with a top-level `tool_calls` array.
 
 ## Installation
 
@@ -73,7 +90,7 @@ The language model you want to use.
 | Model          | The model used to generate responses. This list should automatically populate based on the models you have created in OpenWebUI.                                                                                                                                                           |
 | Strip Markdown | Whether or not to strip Markdown formatting from the model's output. This can be useful for models that tend to generate responses with Markdown formatting, as HomeAssistant doesn't render Markdown text, and TTS engines will often read out individual Markdown formatting characters. |
 
-NOTE: Model properties should be specified on the model itself in your workspace in OpenWebUI itself.
+NOTE: Model properties should still be specified on the model itself in your OpenWebUI workspace. If you want the most reliable local action execution in this fork, enable **Native Tool Calling** on the OpenWebUI model.
 
 #### Search Configuration
 Options related to performing a web search with OpenWebUI. The agent will perform a web search through OpenWebUI and have the model summarize the results.

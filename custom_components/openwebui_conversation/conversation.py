@@ -46,9 +46,30 @@ from .const import (
     DEFAULT_VERIFY_SSL,
 )
 from .exceptions import ApiCommError, ApiJsonError, ApiTimeoutError
+from .local_executor import (
+    execute_tool_calls,
+    extract_tool_calls,
+    summarize_executed_steps,
+)
 from .message import Message
 
 TOOL_ID_CACHE: dict[str, list[str]] = {}
+LOCAL_TOOL_SYSTEM_PROMPT = """You can control Home Assistant locally by returning tool calls.
+
+Supported tool names:
+- home_assistant_tool/control_lights
+- home_assistant_tool/control_switches
+- home_assistant_tool/media_player_command
+- home_assistant_tool/climate_set_temperature
+- home_assistant_tool/wait
+
+The wait tool takes: {"seconds": <integer>}
+
+For device actions, respond with either native tool_calls or a JSON object in message content using this exact shape:
+{"tool_calls":[{"name":"home_assistant_tool/control_lights","parameters":{"names":["Example"],"state":"on"}}]}
+
+For multi-step requests, return multiple tool calls in the correct order. If the user asks to wait before another action, include a wait tool call between those actions.
+"""
 
 async def async_setup_entry(
     hass: HomeAssistant, entry: ConfigEntry, async_add_entities: AddEntitiesCallback
@@ -186,6 +207,15 @@ class OpenWebUIAgent(
             )
 
         response_data = response["choices"][0]["message"]["content"]
+        tool_calls = extract_tool_calls(response)
+        if tool_calls:
+            LOGGER.debug("Executing local tool calls: %s", tool_calls)
+            executed_steps = await execute_tool_calls(self.hass, tool_calls)
+            local_summary = summarize_executed_steps(executed_steps)
+            if local_summary:
+                response_data = local_summary
+            else:
+                response_data = "I couldn't execute that action."
         if self.strip_markdown:
             response_data = self.markdown_parser.render(response_data)
         if should_search:
@@ -209,7 +239,8 @@ class OpenWebUIAgent(
 
         LOGGER.debug("Prompt for %s: %s", model, prompt)
 
-        message_list = [{"role": x.role, "content": x.message} for x in history]
+        message_list = [{"role": "system", "content": LOCAL_TOOL_SYSTEM_PROMPT}]
+        message_list.extend({"role": x.role, "content": x.message} for x in history)
         message_list.append({"role": "user", "content": prompt})
 
         # Fetch model metadata
