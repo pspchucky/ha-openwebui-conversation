@@ -61,6 +61,8 @@ If you want a guaranteed local mapping, you can also add manual alias overrides 
 * `Middle bedroom -> light.michaels_old_room`
 * `Box fan -> switch.fan_outlet_2`
 
+For the shipped NaBu example setup, the fork also includes a bundled fallback alias map matching the example Home Layout. Those mappings are only useful if the referenced entity IDs actually exist in Home Assistant.
+
 ## Recommended Native Tool Setup
 
 For the most reliable multi-step native tool execution in this fork:

@@ -78,6 +78,15 @@ For device actions, respond with either native tool_calls or a JSON object in me
 
 For multi-step requests, return multiple tool calls in the correct order. If the user asks to wait before another action, include a wait tool call between those actions.
 """
+BUNDLED_NABU_ALIAS_OVERRIDES = """Middle bedroom -> light.michaels_old_room
+Middle room -> light.michaels_old_room
+Box fan -> switch.fan_outlet_2
+Kitchen -> light.sink
+Dining Room -> light.dining_table
+Living Room -> light.couch_light
+Hallway -> light.hallway
+Bug zapper -> switch.bug_zapper
+"""
 def _flatten_text_content(content: object) -> str:
     if isinstance(content, str):
         return content.strip()
@@ -451,13 +460,14 @@ class OpenWebUIAgent(
                 include_local_tool_prompt=not tool_ids,
             )
             alias_map = {
+                **_extract_alias_map_from_text(BUNDLED_NABU_ALIAS_OVERRIDES),
+                **self._model_alias_maps.get(model, {}),
+                **_extract_prompt_alias_map(message_list),
                 **_extract_alias_map_from_text(
                     self.entry.options.get(
                         CONF_LOCAL_ALIAS_OVERRIDES, DEFAULT_LOCAL_ALIAS_OVERRIDES
                     )
                 ),
-                **self._model_alias_maps.get(model, {}),
-                **_extract_prompt_alias_map(message_list),
             }
             payload = {
                 "features": {"web_search": should_search},
