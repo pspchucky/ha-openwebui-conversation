@@ -15,9 +15,9 @@ Unlike the upstream project, this fork can execute supported Home Assistant acti
 It also aligns more closely with the current upstream Assist clients:
 
 * web can consume native structured tool progress through `tool_calls` and `tool_result`
-* iOS can consume readable narrated progress through streamed assistant `content`
+* iOS can consume readable streamed assistant `content` for normal non-tool replies
 * raw model chain-of-thought is not forwarded to users
-* tool runs use deterministic narrated progress instead of speaking raw model prose
+* tool runs suppress provisional model prose so the final Assist speech stays reliable
 
 Supported local tools:
 
@@ -150,8 +150,8 @@ Settings relating to the integration itself.
 | API Timeout   | The maximum amount of time (in seconds) to wait for a response from the API                                                      |
 | Language Code | The code for your preferred language. This is set to English (`en`) by default. A list of codes can be found [here][lang-codes]. |
 | Verify SSL    | Verify SSL certificates for HTTPS. Disable verification if you are using self signed certificates.                               |
-| Enable Streaming | Uses OpenWebUI's streaming API so Assist can show intermediate narrated progress and tool activity before the final spoken reply. |
-| Narrate Streaming Progress | Emits short semantic assistant progress messages such as planning, tool calls, waits, and wrapping up. Current streaming TTS paths may also speak these updates. |
+| Enable Streaming | Uses OpenWebUI's streaming API so Assist can show streamed replies and structured tool activity before the final spoken reply. |
+| Narrate Streaming Progress | Best-effort option for extra streamed assistant narration. Tool runs may still suppress narrated `content` so current Assist pipelines can speak the final reply reliably. |
 | Show Structured Tool Details | Stores native tool calls and tool results as separate Assist chat entries for clients that can render them. |
 
 #### Model Configuration
@@ -172,10 +172,10 @@ When **Enable Streaming** is on:
 
 When **Narrate Streaming Progress** is also on:
 
-1. the integration emits deterministic semantic progress like `Hmm, let me think`, tool actions, waits, and `Wrapping up`
-2. those updates use the same assistant-content channel that current upstream iOS consumes
-3. if the active TTS path supports streaming assistant content, those updates may also be spoken mid-run
-4. tool runs do not speak the model's raw streamed prose; the final short reply comes from `intent-end`
+1. the integration can add extra streamed assistant narration where the current Assist pipeline can handle it safely
+2. tool runs still prioritize the final short spoken reply over mid-run narration
+3. current upstream Assist does not reliably support narrated tool progress and a clean final spoken reply in the same run
+4. web clients should rely on structured `tool_calls` and `tool_result` for the deepest live tool detail today
 
 When **Show Structured Tool Details** is on:
 

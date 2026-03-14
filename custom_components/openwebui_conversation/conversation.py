@@ -4,9 +4,7 @@ from __future__ import annotations
 
 from collections.abc import AsyncGenerator
 import json
-import math
 import re
-import time
 from typing import Any, Literal
 
 from hassil import recognize
@@ -56,8 +54,6 @@ from .const import (
 from .exceptions import ApiCommError, ApiJsonError, ApiTimeoutError
 from .local_executor import (
     ToolExecutionResult,
-    describe_tool_call,
-    describe_tool_execution_result,
     execute_tool_calls_detailed,
     extract_tool_calls,
     summarize_execution_results,
@@ -80,11 +76,6 @@ For device actions, respond with either native tool_calls or a JSON object in me
 
 For multi-step requests, return multiple tool calls in the correct order. If the user asks to wait before another action, include a wait tool call between those actions.
 """
-NARRATED_PROGRESS_NATIVE = {"openwebui_progress": True}
-LATENCY_ESTIMATE_MIN_SAMPLES = 2
-LATENCY_ESTIMATE_ALPHA = 0.25
-
-
 def _flatten_text_content(content: object) -> str:
     if isinstance(content, str):
         return content.strip()
@@ -304,30 +295,6 @@ def _flush_stream_buffer(
     return text if text.strip() else ""
 
 
-def _estimate_latency_seconds(
-    estimates: dict[str, float],
-    samples: dict[str, int],
-    model: str,
-) -> int | None:
-    average_seconds = estimates.get(model)
-    sample_count = samples.get(model, 0)
-    if average_seconds is None or sample_count < LATENCY_ESTIMATE_MIN_SAMPLES:
-        return None
-    if average_seconds < 2:
-        return 2
-    return max(2, min(60, int(math.ceil(average_seconds))))
-
-
-def _narrated_progress_delta(text: str) -> dict[str, Any]:
-    return {"role": "assistant", "content": text, "native": NARRATED_PROGRESS_NATIVE}
-
-
-def _narrated_lead_in(estimated_seconds: int | None) -> str:
-    if estimated_seconds is None:
-        return "Hmm, let me think."
-    return f"Hmm, let me think for about {estimated_seconds} seconds."
-
-
 def _is_tool_capable(payload: dict[str, Any]) -> bool:
     if payload.get("tool_ids"):
         return True
@@ -390,8 +357,6 @@ class OpenWebUIAgent(
             CONF_SHOW_DEBUG_BUBBLES, DEFAULT_SHOW_DEBUG_BUBBLES
         )
         self.markdown_parser = MarkdownIt(renderer_cls=RendererPlain)
-        self._model_latency_estimates: dict[str, float] = {}
-        self._model_latency_samples: dict[str, int] = {}
 
     @property
     def supported_languages(self) -> list[str] | Literal["*"]:
@@ -421,9 +386,6 @@ class OpenWebUIAgent(
     ) -> conversation.ConversationResult:
         """Process a sentence."""
         prompt, should_search = self._prepare_prompt(user_input.text)
-        model = self.entry.options.get(CONF_MODEL, DEFAULT_MODEL)
-        started = time.monotonic()
-
         try:
             tool_ids = await self._async_get_tool_ids()
             message_list = _messages_from_chat_log(
@@ -467,7 +429,6 @@ class OpenWebUIAgent(
                     should_search=should_search,
                     alias_map=None,
                 )
-                self._record_latency_estimate(model, time.monotonic() - started)
         except (ApiCommError, ApiJsonError, ApiTimeoutError) as err:
             LOGGER.error("Error generating prompt: %s", err)
             intent_response = intent.IntentResponse(language=user_input.language)
@@ -603,19 +564,6 @@ class OpenWebUIAgent(
             )
         )
 
-    def _record_latency_estimate(self, model: str, elapsed: float) -> None:
-        if elapsed <= 0:
-            return
-        previous = self._model_latency_estimates.get(model)
-        if previous is None:
-            self._model_latency_estimates[model] = elapsed
-        else:
-            self._model_latency_estimates[model] = (
-                previous * (1 - LATENCY_ESTIMATE_ALPHA)
-                + elapsed * LATENCY_ESTIMATE_ALPHA
-            )
-        self._model_latency_samples[model] = self._model_latency_samples.get(model, 0) + 1
-
     async def _async_stream_chat(
         self,
         payload: dict[str, Any],
@@ -625,51 +573,44 @@ class OpenWebUIAgent(
         stream_state: dict[str, Any] | None = None,
     ) -> AsyncGenerator[dict[str, Any], None]:
         """Stream the response into Home Assistant chat log deltas."""
-        model = str(
-            payload.get("model") or self.entry.options.get(CONF_MODEL, DEFAULT_MODEL)
-        )
         partial_tool_calls: dict[int, dict[str, str]] = {}
         content_pending: list[str] = []
         buffered_content: list[str] = []
         full_content_parts: list[str] = []
-        narrate_progress = self.narrate_streaming_progress
         tool_capable = _is_tool_capable(payload)
-        started = time.monotonic()
 
-        try:
-            async for chunk in self.client.async_generate_stream(
-                {**payload, "stream": True}
-            ):
-                choices = chunk.get("choices") or []
-                if not choices:
-                    continue
-                choice = choices[0] or {}
-                delta = choice.get("delta") or choice.get("message") or {}
+        async for chunk in self.client.async_generate_stream({**payload, "stream": True}):
+            choices = chunk.get("choices") or []
+            if not choices:
+                continue
+            choice = choices[0] or {}
+            delta = choice.get("delta") or choice.get("message") or {}
 
-                delta_tool_calls = delta.get("tool_calls")
-                if isinstance(delta_tool_calls, list):
-                    _accumulate_stream_tool_calls(partial_tool_calls, delta_tool_calls)
+            delta_tool_calls = delta.get("tool_calls")
+            if isinstance(delta_tool_calls, list):
+                _accumulate_stream_tool_calls(partial_tool_calls, delta_tool_calls)
 
-                content_delta = _flatten_stream_content(delta.get("content"))
-                if content_delta:
-                    full_content_parts.append(content_delta)
-                    target_buffer = buffered_content if (narrate_progress and tool_capable) else content_pending
-                    target_buffer.append(content_delta)
-                    if not partial_tool_calls and target_buffer is content_pending:
-                        flushed = _flush_stream_buffer(
-                            content_pending, sentence_safe=True
-                        )
-                        if flushed:
-                            yield {"role": "assistant", "content": flushed}
-        finally:
-            self._record_latency_estimate(model, time.monotonic() - started)
+            content_delta = _flatten_stream_content(delta.get("content"))
+            if content_delta:
+                full_content_parts.append(content_delta)
+                if tool_capable:
+                    # Home Assistant streams assistant content straight into TTS.
+                    # Buffer tool-capable turns until we know whether they will
+                    # become tool calls so provisional prose does not get spoken
+                    # out of turn before the final response.
+                    buffered_content.append(content_delta)
+                else:
+                    content_pending.append(content_delta)
+                    flushed = _flush_stream_buffer(content_pending, sentence_safe=True)
+                    if flushed:
+                        yield {"role": "assistant", "content": flushed}
 
         tool_calls = _normalize_stream_tool_calls(partial_tool_calls)
         full_content = "".join(full_content_parts).strip()
 
-        if buffered_content:
+        if buffered_content and not tool_calls:
             content_pending.extend(buffered_content)
-            buffered_content.clear()
+        buffered_content.clear()
         final_content = (
             _flush_stream_buffer(content_pending, force=True, sentence_safe=True) or ""
         ).strip()
@@ -683,12 +624,6 @@ class OpenWebUIAgent(
                 final_content = ""
 
         if tool_calls:
-            estimated_seconds = _estimate_latency_seconds(
-                self._model_latency_estimates, self._model_latency_samples, model
-            )
-            if narrate_progress:
-                yield _narrated_progress_delta(_narrated_lead_in(estimated_seconds))
-
             if self.show_debug_bubbles:
                 tool_inputs = _tool_inputs_from_tool_calls(tool_calls)
                 if tool_inputs:
@@ -696,16 +631,6 @@ class OpenWebUIAgent(
 
             execution_results: list[ToolExecutionResult] = []
             for tool_call in tool_calls:
-                tool_name = str(tool_call.get("name", ""))
-                parameters = tool_call.get("parameters")
-                if not isinstance(parameters, dict):
-                    parameters = {}
-
-                if narrate_progress:
-                    planned_line = describe_tool_call(tool_name, parameters)
-                    if planned_line:
-                        yield _narrated_progress_delta(planned_line)
-
                 execution_result = (
                     await execute_tool_calls_detailed(self.hass, [tool_call], alias_map)
                 )[0]
@@ -719,16 +644,9 @@ class OpenWebUIAgent(
                         "tool_result": execution_result.tool_result,
                     }
 
-                if narrate_progress:
-                    executed_line = describe_tool_execution_result(execution_result)
-                    if executed_line:
-                        yield _narrated_progress_delta(executed_line)
-
             final_text = summarize_execution_results(execution_results)
             if not final_text:
                 final_text = "I found a tool call, but couldn't execute it successfully."
-            if narrate_progress:
-                yield _narrated_progress_delta("Wrapping up.")
         else:
             final_text = full_content or final_content or "I didn't get a usable response from the model."
 
