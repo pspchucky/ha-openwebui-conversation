@@ -56,6 +56,11 @@ When your system prompt includes a `Home Layout` section like:
 
 the fork will first try to resolve those prompt-defined names back to the mapped entity IDs during local execution. It can recover these mappings from the live system prompt and from OpenWebUI model metadata when that prompt is stored with the model/workspace. Home Assistant exposed names, aliases, and entity area names are still used as the normal fallback path.
 
+If you want a guaranteed local mapping, you can also add manual alias overrides in the integration options using lines like:
+
+* `Middle bedroom -> light.michaels_old_room`
+* `Box fan -> switch.fan_outlet_2`
+
 ## Recommended Native Tool Setup
 
 For the most reliable multi-step native tool execution in this fork:
@@ -153,6 +158,7 @@ Settings relating to the integration itself.
 | Enable Streaming | Uses OpenWebUI's streaming API so Assist can show streamed replies and structured tool activity before the final spoken reply. |
 | Narrate Streaming Progress | Best-effort option for extra streamed assistant narration. Tool runs may still suppress narrated `content` so current Assist pipelines can speak the final reply reliably. |
 | Show Structured Tool Details | Stores native tool calls and tool results as separate Assist chat entries for clients that can render them. |
+| Local Alias Overrides | Optional manual `Friendly name -> entity_id` mappings used by the local executor before other fallback resolution paths. |
 
 #### Model Configuration
 The language model you want to use.

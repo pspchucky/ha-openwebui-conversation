@@ -44,6 +44,7 @@ from .const import (
     CONF_ENABLE_STREAMING,
     CONF_NARRATE_STREAMING_PROGRESS,
     CONF_SHOW_DEBUG_BUBBLES,
+    CONF_LOCAL_ALIAS_OVERRIDES,
     DEFAULT_SERVICE_NAME,
     DEFAULT_BASE_URL,
     DEFAULT_TIMEOUT,
@@ -57,6 +58,7 @@ from .const import (
     DEFAULT_ENABLE_STREAMING,
     DEFAULT_NARRATE_STREAMING_PROGRESS,
     DEFAULT_SHOW_DEBUG_BUBBLES,
+    DEFAULT_LOCAL_ALIAS_OVERRIDES,
 )
 from .exceptions import ApiClientError, ApiCommError, ApiTimeoutError
 
@@ -86,6 +88,7 @@ DEFAULT_OPTIONS = types.MappingProxyType(
         CONF_ENABLE_STREAMING: DEFAULT_ENABLE_STREAMING,
         CONF_NARRATE_STREAMING_PROGRESS: DEFAULT_NARRATE_STREAMING_PROGRESS,
         CONF_SHOW_DEBUG_BUBBLES: DEFAULT_SHOW_DEBUG_BUBBLES,
+        CONF_LOCAL_ALIAS_OVERRIDES: DEFAULT_LOCAL_ALIAS_OVERRIDES,
     }
 )
 
@@ -283,6 +286,15 @@ def openwebui_schema_general_config(options: MappingProxyType[str, Any]) -> dict
             },
             default=DEFAULT_SHOW_DEBUG_BUBBLES,
         ): BooleanSelector(BooleanSelectorConfig()),
+        vol.Optional(
+            CONF_LOCAL_ALIAS_OVERRIDES,
+            description={
+                "suggested_value": options.get(
+                    CONF_LOCAL_ALIAS_OVERRIDES, DEFAULT_LOCAL_ALIAS_OVERRIDES
+                )
+            },
+            default=DEFAULT_LOCAL_ALIAS_OVERRIDES,
+        ): TemplateSelector(TemplateSelectorConfig()),
     }
 
 

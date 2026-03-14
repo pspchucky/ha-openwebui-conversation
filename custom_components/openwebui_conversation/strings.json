@@ -38,7 +38,8 @@
                     "verify_ssl": "Verify SSL",
                     "enable_streaming": "Enable Streaming",
                     "narrate_streaming_progress": "Narrate Streaming Progress (best effort)",
-                    "show_debug_bubbles": "Show Structured Tool Details"
+                    "show_debug_bubbles": "Show Structured Tool Details",
+                    "local_alias_overrides": "Local Alias Overrides"
                 }
             },
             "model_config": {

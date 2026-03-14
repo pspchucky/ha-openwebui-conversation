@@ -28,6 +28,7 @@ from .const import (
     CONF_BASE_URL,
     CONF_ENABLE_STREAMING,
     CONF_LANGUAGE_CODE,
+    CONF_LOCAL_ALIAS_OVERRIDES,
     CONF_MODEL,
     CONF_NARRATE_STREAMING_PROGRESS,
     CONF_SEARCH_ENABLED,
@@ -39,6 +40,7 @@ from .const import (
     CONF_VERIFY_SSL,
     DEFAULT_ENABLE_STREAMING,
     DEFAULT_LANGUAGE_CODE,
+    DEFAULT_LOCAL_ALIAS_OVERRIDES,
     DEFAULT_MODEL,
     DEFAULT_NARRATE_STREAMING_PROGRESS,
     DEFAULT_SEARCH_ENABLED,
@@ -449,6 +451,11 @@ class OpenWebUIAgent(
                 include_local_tool_prompt=not tool_ids,
             )
             alias_map = {
+                **_extract_alias_map_from_text(
+                    self.entry.options.get(
+                        CONF_LOCAL_ALIAS_OVERRIDES, DEFAULT_LOCAL_ALIAS_OVERRIDES
+                    )
+                ),
                 **self._model_alias_maps.get(model, {}),
                 **_extract_prompt_alias_map(message_list),
             }

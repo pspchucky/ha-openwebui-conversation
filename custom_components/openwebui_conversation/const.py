@@ -25,6 +25,7 @@ CONF_VERIFY_SSL = "verify_ssl"
 CONF_ENABLE_STREAMING = "enable_streaming"
 CONF_NARRATE_STREAMING_PROGRESS = "narrate_streaming_progress"
 CONF_SHOW_DEBUG_BUBBLES = "show_debug_bubbles"
+CONF_LOCAL_ALIAS_OVERRIDES = "local_alias_overrides"
 
 DEFAULT_SERVICE_NAME = "OpenWebUI"
 DEFAULT_BASE_URL = "http://openwebui.homeassistant.local"
@@ -40,3 +41,4 @@ DEFAULT_VERIFY_SSL = True
 DEFAULT_ENABLE_STREAMING = True
 DEFAULT_NARRATE_STREAMING_PROGRESS = False
 DEFAULT_SHOW_DEBUG_BUBBLES = True
+DEFAULT_LOCAL_ALIAS_OVERRIDES = ""
