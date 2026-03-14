@@ -19,6 +19,7 @@ Supported local tools:
 * `home_assistant_tool/media_player_command`
 * `home_assistant_tool/climate_set_temperature`
 * `home_assistant_tool/wait`
+* `home_assistant_tool/light_on_then_off_after_delay` (example OpenWebUI tool script)
 
 This makes multi-step local sequences possible, including patterns like "turn on the middle bedroom lights, wait 5 seconds, then turn them off", as long as the model returns the tool calls in order.
 
@@ -30,6 +31,61 @@ For best results with local tool execution, use an OpenWebUI model/workspace tha
 
 * has **Native Tool Calling** enabled, or
 * returns a JSON object in `message.content` with a top-level `tool_calls` array.
+
+## Example Files
+
+This fork now includes a ready-to-copy example set for the NaBu + MLX + Home Assistant flow:
+
+* [`examples/nabu_system_prompt.md`](examples/nabu_system_prompt.md) - example system prompt for the NaBu model/workspace in OpenWebUI.
+* [`examples/home_assistant_pro_tools.py`](examples/home_assistant_pro_tools.py) - example OpenWebUI tool script for Home Assistant actions, including `wait` and `light_on_then_off_after_delay`.
+* [`examples/native_multistep_request.json`](examples/native_multistep_request.json) - example OpenAI-compatible request body for a delayed multi-step light action.
+* [`examples/native_multistep_response.json`](examples/native_multistep_response.json) - example native tool-calling response shape returned by the model.
+
+These are meant to be practical examples you can adapt directly instead of rebuilding the setup from scratch.
+
+## Recommended Native Tool Setup
+
+For the most reliable multi-step native tool execution in this fork:
+
+* Enable **Native Tool Calling** on the OpenWebUI model.
+* Use the NaBu prompt from [`examples/nabu_system_prompt.md`](examples/nabu_system_prompt.md).
+* Load the OpenWebUI tool from [`examples/home_assistant_pro_tools.py`](examples/home_assistant_pro_tools.py).
+* Point OpenWebUI at your MLX OpenAI-compatible endpoint.
+* Prefer a stronger planning model for multi-step chains. In the tested MLX setup, `Qwen3.5-9B-MLX-4bit` was the most reliable option for `turn on -> wait -> turn off` style requests on Apple Silicon with constrained memory.
+
+## Relevant Fork Files
+
+If you are customizing or debugging this fork, these files are the important ones:
+
+* [`custom_components/openwebui_conversation/conversation.py`](custom_components/openwebui_conversation/conversation.py)
+  * Builds the message list sent to OpenWebUI.
+  * Reads the model response.
+  * Can show `Thinking:` and `Tool calls:` in the final Assist response when the model returns reasoning/tool data.
+* [`custom_components/openwebui_conversation/local_executor.py`](custom_components/openwebui_conversation/local_executor.py)
+  * Extracts native or prompt-style tool plans.
+  * Executes supported Home Assistant actions locally in order.
+  * Supports `wait` for delayed local action chains.
+* [`custom_components/openwebui_conversation/api.py`](custom_components/openwebui_conversation/api.py)
+  * Handles the HTTP call to OpenWebUI.
+  * Uses a one-shot JSON response today rather than true streaming.
+
+## Example Flow
+
+Example user request:
+
+* `Turn on the middle bedroom light, wait 5 seconds, then turn off the middle bedroom light.`
+
+Expected native tool plan:
+
+1. `control_lights({"names":["light.michaels_old_room"],"state":"on"})`
+2. `wait({"seconds":5})`
+3. `control_lights({"names":["light.michaels_old_room"],"state":"off"})`
+
+If you want to make that even easier for smaller models, the example tool script also exposes:
+
+* `light_on_then_off_after_delay({"names":["Middle bedroom"],"seconds":5})`
+
+That composite tool gives the model a simpler single decision when multi-step planning quality is not good enough.
 
 ## Installation
 

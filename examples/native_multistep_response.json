@@ -1,0 +1,35 @@
+{
+  "choices": [
+    {
+      "finish_reason": "tool_calls",
+      "message": {
+        "role": "assistant",
+        "content": "Got it. Running the requested tool now.",
+        "reasoning": "The user wants three ordered actions: turn the light on, wait five seconds, then turn it off.",
+        "tool_calls": [
+          {
+            "type": "function",
+            "function": {
+              "name": "control_lights",
+              "arguments": "{\"names\":[\"light.michaels_old_room\"],\"state\":\"on\"}"
+            }
+          },
+          {
+            "type": "function",
+            "function": {
+              "name": "wait",
+              "arguments": "{\"seconds\":5}"
+            }
+          },
+          {
+            "type": "function",
+            "function": {
+              "name": "control_lights",
+              "arguments": "{\"names\":[\"light.michaels_old_room\"],\"state\":\"off\"}"
+            }
+          }
+        ]
+      }
+    }
+  ]
+}

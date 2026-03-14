@@ -1,0 +1,62 @@
+{
+  "model": "mlx-community/Qwen3.5-9B-MLX-4bit",
+  "messages": [
+    {
+      "role": "system",
+      "content": "Use the NaBu system prompt from examples/nabu_system_prompt.md."
+    },
+    {
+      "role": "user",
+      "content": "Turn on the middle bedroom light, wait 5 seconds, then turn off the middle bedroom light."
+    }
+  ],
+  "tools": [
+    {
+      "type": "function",
+      "function": {
+        "name": "home_assistant_tool/control_lights",
+        "description": "Control Home Assistant lights",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "names": {
+              "type": "array",
+              "items": { "type": "string" }
+            },
+            "state": {
+              "type": "string",
+              "enum": ["on", "off"]
+            },
+            "brightness_pct": { "type": "integer" },
+            "rgb": {
+              "type": "array",
+              "items": { "type": "integer" }
+            }
+          },
+          "required": ["names", "state"]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "home_assistant_tool/wait",
+        "description": "Pause before the next action in a multi-step plan",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "seconds": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 60
+            }
+          },
+          "required": ["seconds"]
+        }
+      }
+    }
+  ],
+  "tool_choice": "required",
+  "stream": false,
+  "max_tokens": 512
+}

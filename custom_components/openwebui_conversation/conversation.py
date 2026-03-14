@@ -94,6 +94,47 @@ def _assistant_text_from_response(response: dict) -> str:
     message = (choices[0] or {}).get("message") or {}
     return _flatten_text_content(message.get("content"))
 
+
+def _assistant_reasoning_from_response(response: dict) -> str:
+    choices = response.get("choices") or []
+    if not choices:
+        return ""
+    message = (choices[0] or {}).get("message") or {}
+    for key in ("reasoning", "reasoning_content"):
+        value = message.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return ""
+
+
+def _format_tool_calls_for_debug(tool_calls: list[dict]) -> str:
+    if not tool_calls:
+        return ""
+    lines: list[str] = ["Tool calls:"]
+    for idx, tool_call in enumerate(tool_calls, start=1):
+        name = str(tool_call.get("name", "")).strip() or "unknown"
+        parameters = tool_call.get("parameters")
+        params_text = str(parameters) if isinstance(parameters, dict) else "{}"
+        lines.append(f"{idx}. {name} {params_text}")
+    return "\n".join(lines)
+
+
+def _compose_debug_response(
+    *,
+    reasoning: str,
+    tool_calls: list[dict],
+    final_text: str,
+) -> str:
+    parts: list[str] = []
+    if reasoning:
+        parts.append(f"Thinking:\n{reasoning}")
+    tool_debug = _format_tool_calls_for_debug(tool_calls)
+    if tool_debug:
+        parts.append(tool_debug)
+    if final_text:
+        parts.append(final_text)
+    return "\n\n".join(part for part in parts if part).strip()
+
 async def async_setup_entry(
     hass: HomeAssistant, entry: ConfigEntry, async_add_entities: AddEntitiesCallback
 ) -> bool:
@@ -230,6 +271,7 @@ class OpenWebUIAgent(
             )
 
         response_data = _assistant_text_from_response(response)
+        reasoning_data = _assistant_reasoning_from_response(response)
         tool_calls = extract_tool_calls(response)
         if tool_calls:
             LOGGER.debug("Executing local tool calls: %s", tool_calls)
@@ -248,6 +290,11 @@ class OpenWebUIAgent(
         elif not response_data:
             LOGGER.warning("Model response had no message content and no tool calls: %s", response)
             response_data = "I didn't get a usable response from the model."
+        response_data = _compose_debug_response(
+            reasoning=reasoning_data,
+            tool_calls=tool_calls,
+            final_text=response_data,
+        )
         if self.strip_markdown:
             response_data = self.markdown_parser.render(response_data)
         if should_search:
