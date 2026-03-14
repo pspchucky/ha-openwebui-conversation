@@ -71,6 +71,29 @@ For device actions, respond with either native tool_calls or a JSON object in me
 For multi-step requests, return multiple tool calls in the correct order. If the user asks to wait before another action, include a wait tool call between those actions.
 """
 
+
+def _flatten_text_content(content: object) -> str:
+    if isinstance(content, str):
+        return content.strip()
+    if isinstance(content, list):
+        parts: list[str] = []
+        for item in content:
+            if not isinstance(item, dict):
+                continue
+            text = item.get("text")
+            if isinstance(text, str) and text.strip():
+                parts.append(text.strip())
+        return "\n".join(parts)
+    return ""
+
+
+def _assistant_text_from_response(response: dict) -> str:
+    choices = response.get("choices") or []
+    if not choices:
+        return ""
+    message = (choices[0] or {}).get("message") or {}
+    return _flatten_text_content(message.get("content"))
+
 async def async_setup_entry(
     hass: HomeAssistant, entry: ConfigEntry, async_add_entities: AddEntitiesCallback
 ) -> bool:
@@ -206,7 +229,7 @@ class OpenWebUIAgent(
                 response=intent_response, conversation_id=conversation_id
             )
 
-        response_data = response["choices"][0]["message"]["content"]
+        response_data = _assistant_text_from_response(response)
         tool_calls = extract_tool_calls(response)
         if tool_calls:
             LOGGER.debug("Executing local tool calls: %s", tool_calls)
@@ -215,7 +238,16 @@ class OpenWebUIAgent(
             if local_summary:
                 response_data = local_summary
             else:
-                response_data = "I couldn't execute that action."
+                LOGGER.warning("Tool calls returned no executable steps: %s", tool_calls)
+                if "running the requested tool now" in response_data.lower():
+                    response_data = ""
+                response_data = (
+                    response_data
+                    or "I found a tool call, but couldn't map it to an exposed Home Assistant entity."
+                )
+        elif not response_data:
+            LOGGER.warning("Model response had no message content and no tool calls: %s", response)
+            response_data = "I didn't get a usable response from the model."
         if self.strip_markdown:
             response_data = self.markdown_parser.render(response_data)
         if should_search:
@@ -239,10 +271,6 @@ class OpenWebUIAgent(
 
         LOGGER.debug("Prompt for %s: %s", model, prompt)
 
-        message_list = [{"role": "system", "content": LOCAL_TOOL_SYSTEM_PROMPT}]
-        message_list.extend({"role": x.role, "content": x.message} for x in history)
-        message_list.append({"role": "user", "content": prompt})
-
         # Fetch model metadata
         tool_ids = TOOL_ID_CACHE.get(model)
         if tool_ids is None:
@@ -253,6 +281,12 @@ class OpenWebUIAgent(
             TOOL_ID_CACHE[model] = tool_ids
 
         LOGGER.debug("Using tool_ids for model %s: %s", model, tool_ids)
+
+        message_list = []
+        if not tool_ids:
+            message_list.append({"role": "system", "content": LOCAL_TOOL_SYSTEM_PROMPT})
+        message_list.extend({"role": x.role, "content": x.message} for x in history)
+        message_list.append({"role": "user", "content": prompt})
 
         result = await self.client.async_generate(
             {

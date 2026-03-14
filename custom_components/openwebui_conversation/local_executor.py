@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 from dataclasses import dataclass
 from typing import Any
 
@@ -50,6 +51,14 @@ def _normalize_name_list(value: Any) -> list[str]:
             return [part.strip() for part in text.split(",") if part.strip()]
         return [text]
     return []
+
+
+def _lookup_key(value: str) -> str:
+    text = value.strip().lower()
+    text = re.sub(r"^[Tt]he\s+", "", text)
+    text = text.replace("_", " ").replace("-", " ")
+    text = re.sub(r"\s+", " ", text)
+    return text
 
 
 def _parse_json_from_text(content: str | None) -> dict[str, Any] | None:
@@ -128,15 +137,26 @@ def extract_tool_calls(response: dict[str, Any]) -> list[dict[str, Any]]:
 def _entity_index(hass: HomeAssistant) -> dict[str, list[dict[str, Any]]]:
     index: dict[str, list[dict[str, Any]]] = {}
     for entity in get_exposed_entities(hass):
-        keys = {entity["entity_id"].lower(), entity["name"].lower()}
+        entity_id = entity["entity_id"]
+        entity_name = entity["name"]
+        entity_slug = entity_id.split(".", 1)[-1]
+        keys = {
+            entity_id.lower(),
+            entity_slug.lower(),
+            entity_name.lower(),
+            _lookup_key(entity_id),
+            _lookup_key(entity_slug),
+            _lookup_key(entity_name),
+        }
         for alias in entity.get("aliases", []):
             if alias:
-                keys.add(str(alias).lower())
-        if entity["name"]:
-            keys.add(f"{entity['name'].lower()} light")
-            keys.add(f"{entity['name'].lower()} lights")
-            keys.add(f"{entity['name'].lower()} switch")
-            keys.add(f"{entity['name'].lower()} switches")
+                alias_text = str(alias)
+                keys.add(alias_text.lower())
+                keys.add(_lookup_key(alias_text))
+        if entity_name:
+            for suffix in (" light", " lights", " switch", " switches"):
+                keys.add(f"{entity_name.lower()}{suffix}")
+                keys.add(f"{_lookup_key(entity_name)}{suffix}")
         for key in keys:
             index.setdefault(key, []).append(entity)
     return index
@@ -149,8 +169,10 @@ def _resolve_entities(
     resolved_ids: list[str] = []
     resolved_names: list[str] = []
     for raw_name in names:
-        key = raw_name.strip().lower()
-        candidates = index.get(key, [])
+        raw_text = raw_name.strip()
+        direct_matches = index.get(raw_text.lower(), [])
+        normalized_matches = index.get(_lookup_key(raw_text), [])
+        candidates = direct_matches or normalized_matches
         if expected_domain:
             candidates = [
                 entity
@@ -158,6 +180,9 @@ def _resolve_entities(
                 if entity["entity_id"].split(".", 1)[0] == expected_domain
             ]
         if not candidates:
+            LOGGER.debug(
+                "Unable to resolve entity for %r in domain %r", raw_name, expected_domain
+            )
             continue
         entity = candidates[0]
         entity_id = entity["entity_id"]
@@ -165,6 +190,39 @@ def _resolve_entities(
             resolved_ids.append(entity_id)
             resolved_names.append(entity["name"])
     return resolved_ids, resolved_names
+
+
+def _entity_ids_from_parameters(parameters: dict[str, Any]) -> list[str]:
+    for key in (
+        "entity_id",
+        "entity_ids",
+        "entityID",
+        "entityIDs",
+        "names_or_ids",
+    ):
+        values = _normalize_name_list(parameters.get(key))
+        if values:
+            return values
+    entities_csv = parameters.get("entities_csv")
+    if isinstance(entities_csv, str) and entities_csv.strip():
+        return [part.strip() for part in entities_csv.split(",") if part.strip()]
+    return []
+
+
+def _resolve_entity_targets(
+    hass: HomeAssistant,
+    parameters: dict[str, Any],
+    expected_domain: str | None = None,
+) -> tuple[list[str], list[str]]:
+    entity_candidates = _entity_ids_from_parameters(parameters)
+    if entity_candidates:
+        return _resolve_entities(hass, entity_candidates, expected_domain)
+    names = _normalize_name_list(parameters.get("names"))
+    if not names:
+        names = _normalize_name_list(parameters.get("name"))
+    if not names:
+        names = _normalize_name_list(parameters.get("names_csv"))
+    return _resolve_entities(hass, names, expected_domain)
 
 
 async def _call_service(
@@ -176,11 +234,9 @@ async def _call_service(
 async def _execute_control_lights(
     hass: HomeAssistant, parameters: dict[str, Any]
 ) -> ExecutedStep | None:
-    names = _normalize_name_list(parameters.get("names"))
-    if not names:
-        names = _normalize_name_list(parameters.get("name"))
-    entity_ids, resolved_names = _resolve_entities(hass, names, "light")
+    entity_ids, resolved_names = _resolve_entity_targets(hass, parameters, "light")
     if not entity_ids:
+        LOGGER.debug("control_lights could not resolve targets: %s", parameters)
         return None
     state = str(parameters.get("state", "")).strip().lower()
     data: dict[str, Any] = {"entity_id": entity_ids}
@@ -205,34 +261,38 @@ async def _execute_control_lights(
             except Exception:
                 pass
     await _call_service(hass, "light", service, data)
-    return ExecutedStep("lights", resolved_names or names, "off" if service == "turn_off" else "on")
+    return ExecutedStep(
+        "lights",
+        resolved_names or entity_ids,
+        "off" if service == "turn_off" else "on",
+    )
 
 
 async def _execute_control_switches(
     hass: HomeAssistant, parameters: dict[str, Any]
 ) -> ExecutedStep | None:
-    names = _normalize_name_list(parameters.get("names"))
-    if not names:
-        names = _normalize_name_list(parameters.get("name"))
-    entity_ids, resolved_names = _resolve_entities(hass, names, "switch")
+    entity_ids, resolved_names = _resolve_entity_targets(hass, parameters, "switch")
     if not entity_ids:
+        LOGGER.debug("control_switches could not resolve targets: %s", parameters)
         return None
     state = str(parameters.get("state", "")).strip().lower()
     service = "turn_off" if state == "off" else "turn_on"
     await _call_service(hass, "switch", service, {"entity_id": entity_ids})
     return ExecutedStep(
-        "switches", resolved_names or names, "off" if service == "turn_off" else "on"
+        "switches",
+        resolved_names or entity_ids,
+        "off" if service == "turn_off" else "on",
     )
 
 
 async def _execute_media_player_command(
     hass: HomeAssistant, parameters: dict[str, Any]
 ) -> ExecutedStep | None:
-    names = _normalize_name_list(parameters.get("names"))
-    if not names:
-        names = _normalize_name_list(parameters.get("name"))
-    entity_ids, resolved_names = _resolve_entities(hass, names, "media_player")
+    entity_ids, resolved_names = _resolve_entity_targets(
+        hass, parameters, "media_player"
+    )
     if not entity_ids:
+        LOGGER.debug("media_player_command could not resolve targets: %s", parameters)
         return None
     action = str(parameters.get("action", "")).strip().lower()
     service_map = {
@@ -259,17 +319,17 @@ async def _execute_media_player_command(
         if isinstance(volume_level, (int, float)):
             data["volume_level"] = float(volume_level)
     await _call_service(hass, "media_player", service, data)
-    return ExecutedStep("media_player", resolved_names or names, action)
+    return ExecutedStep("media_player", resolved_names or entity_ids, action)
 
 
 async def _execute_climate_set_temperature(
     hass: HomeAssistant, parameters: dict[str, Any]
 ) -> ExecutedStep | None:
-    names = _normalize_name_list(parameters.get("names"))
-    if not names:
-        names = _normalize_name_list(parameters.get("name"))
-    entity_ids, resolved_names = _resolve_entities(hass, names, "climate")
+    entity_ids, resolved_names = _resolve_entity_targets(hass, parameters, "climate")
     if not entity_ids:
+        LOGGER.debug(
+            "climate_set_temperature could not resolve targets: %s", parameters
+        )
         return None
     temperature_c = parameters.get("temperature_c")
     if isinstance(temperature_c, str):
@@ -287,7 +347,9 @@ async def _execute_climate_set_temperature(
     if isinstance(hvac_mode, str) and hvac_mode.strip():
         data["hvac_mode"] = hvac_mode.strip()
     await _call_service(hass, "climate", "set_temperature", data)
-    return ExecutedStep("climate", resolved_names or names, f"{float(temperature_c):g}C")
+    return ExecutedStep(
+        "climate", resolved_names or entity_ids, f"{float(temperature_c):g}C"
+    )
 
 
 async def _execute_wait(parameters: dict[str, Any]) -> ExecutedStep | None:
@@ -302,6 +364,47 @@ async def _execute_wait(parameters: dict[str, Any]) -> ExecutedStep | None:
     seconds = max(0, min(int(seconds), 60))
     await asyncio.sleep(seconds)
     return ExecutedStep("wait", [], seconds=seconds)
+
+
+async def _execute_control_device(
+    hass: HomeAssistant, parameters: dict[str, Any]
+) -> ExecutedStep | None:
+    entity_ids, resolved_names = _resolve_entity_targets(hass, parameters)
+    if not entity_ids:
+        LOGGER.debug("controlDevice could not resolve targets: %s", parameters)
+        return None
+    domain = str(parameters.get("domain", "")).strip()
+    service = str(parameters.get("service", "")).strip()
+    if not domain or not service:
+        LOGGER.debug("controlDevice missing domain/service: %s", parameters)
+        return None
+    await _call_service(hass, domain, service, {"entity_id": entity_ids})
+    return ExecutedStep("service", resolved_names or entity_ids, f"{domain}.{service}")
+
+
+async def _execute_call_service_raw(
+    hass: HomeAssistant, parameters: dict[str, Any]
+) -> ExecutedStep | None:
+    domain = str(parameters.get("domain", "")).strip()
+    service = str(parameters.get("service", "")).strip()
+    if not domain or not service:
+        LOGGER.debug("call_service_raw missing domain/service: %s", parameters)
+        return None
+    entity_ids, resolved_names = _resolve_entity_targets(hass, parameters)
+    if not entity_ids:
+        LOGGER.debug("call_service_raw could not resolve targets: %s", parameters)
+        return None
+    data: dict[str, Any] = {"entity_id": entity_ids}
+    data_json = parameters.get("data_json")
+    if isinstance(data_json, str) and data_json.strip():
+        try:
+            parsed_data = json.loads(data_json)
+        except Exception:
+            parsed_data = None
+        if isinstance(parsed_data, dict):
+            data.update(parsed_data)
+    await _call_service(hass, domain, service, data)
+    return ExecutedStep("service", resolved_names or entity_ids, f"{domain}.{service}")
 
 
 async def execute_tool_calls(
@@ -325,10 +428,16 @@ async def execute_tool_calls(
             step = await _execute_climate_set_temperature(hass, parameters)
         elif name == "wait":
             step = await _execute_wait(parameters)
+        elif name == "controlDevice":
+            step = await _execute_control_device(hass, parameters)
+        elif name == "call_service_raw":
+            step = await _execute_call_service_raw(hass, parameters)
         else:
             LOGGER.debug("Ignoring unsupported local tool call: %s", name)
         if step is not None:
             steps.append(step)
+        else:
+            LOGGER.debug("Tool call produced no executed step: %s", tool_call)
     return steps
 
 
@@ -349,6 +458,8 @@ def summarize_executed_steps(steps: list[ExecutedStep]) -> str | None:
             return f"Done. The temperature for {joined_names} is set to {step.state}."
         if step.kind == "wait":
             return f"Done. Waited {step.seconds} seconds."
+        if step.kind == "service":
+            return f"Done. Called {step.state} for {joined_names}."
 
     parts: list[str] = []
     for step in steps:
@@ -363,6 +474,8 @@ def summarize_executed_steps(steps: list[ExecutedStep]) -> str | None:
             parts.append(f"set {joined_names} to {step.state}")
         elif step.kind == "wait":
             parts.append(f"waited {step.seconds} seconds")
+        elif step.kind == "service":
+            parts.append(f"called {step.state} for {joined_names}")
     if not parts:
         return None
     if len(parts) == 2:
