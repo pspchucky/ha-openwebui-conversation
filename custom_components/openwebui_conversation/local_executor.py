@@ -20,6 +20,7 @@ class ExecutedStep:
 
     kind: str
     names: list[str]
+    entity_ids: list[str]
     state: str | None = None
     seconds: int | None = None
 
@@ -343,6 +344,7 @@ async def _execute_control_lights(
     return ExecutedStep(
         "lights",
         resolved_names or entity_ids,
+        entity_ids,
         "off" if service == "turn_off" else "on",
     )
 
@@ -364,6 +366,7 @@ async def _execute_control_switches(
     return ExecutedStep(
         "switches",
         resolved_names or entity_ids,
+        entity_ids,
         "off" if service == "turn_off" else "on",
     )
 
@@ -404,7 +407,9 @@ async def _execute_media_player_command(
         if isinstance(volume_level, (int, float)):
             data["volume_level"] = float(volume_level)
     await _call_service(hass, "media_player", service, data)
-    return ExecutedStep("media_player", resolved_names or entity_ids, action)
+    return ExecutedStep(
+        "media_player", resolved_names or entity_ids, entity_ids, action
+    )
 
 
 async def _execute_climate_set_temperature(
@@ -437,7 +442,10 @@ async def _execute_climate_set_temperature(
         data["hvac_mode"] = hvac_mode.strip()
     await _call_service(hass, "climate", "set_temperature", data)
     return ExecutedStep(
-        "climate", resolved_names or entity_ids, f"{float(temperature_c):g}C"
+        "climate",
+        resolved_names or entity_ids,
+        entity_ids,
+        f"{float(temperature_c):g}C",
     )
 
 
@@ -452,7 +460,7 @@ async def _execute_wait(parameters: dict[str, Any]) -> ExecutedStep | None:
         return None
     seconds = max(0, min(int(seconds), 60))
     await asyncio.sleep(seconds)
-    return ExecutedStep("wait", [], seconds=seconds)
+    return ExecutedStep("wait", [], [], seconds=seconds)
 
 
 async def _execute_control_device(
@@ -460,7 +468,9 @@ async def _execute_control_device(
     parameters: dict[str, Any],
     alias_map: dict[str, str] | None = None,
 ) -> ExecutedStep | None:
-    entity_ids, resolved_names = _resolve_entity_targets(hass, parameters, alias_map=alias_map)
+    entity_ids, resolved_names = _resolve_entity_targets(
+        hass, parameters, alias_map=alias_map
+    )
     if not entity_ids:
         LOGGER.debug("controlDevice could not resolve targets: %s", parameters)
         return None
@@ -470,7 +480,12 @@ async def _execute_control_device(
         LOGGER.debug("controlDevice missing domain/service: %s", parameters)
         return None
     await _call_service(hass, domain, service, {"entity_id": entity_ids})
-    return ExecutedStep("service", resolved_names or entity_ids, f"{domain}.{service}")
+    return ExecutedStep(
+        "service",
+        resolved_names or entity_ids,
+        entity_ids,
+        f"{domain}.{service}",
+    )
 
 
 async def _execute_call_service_raw(
@@ -499,7 +514,12 @@ async def _execute_call_service_raw(
         if isinstance(parsed_data, dict):
             data.update(parsed_data)
     await _call_service(hass, domain, service, data)
-    return ExecutedStep("service", resolved_names or entity_ids, f"{domain}.{service}")
+    return ExecutedStep(
+        "service",
+        resolved_names or entity_ids,
+        entity_ids,
+        f"{domain}.{service}",
+    )
 
 
 def _tool_result_from_step(step: ExecutedStep) -> dict[str, Any]:
@@ -508,12 +528,87 @@ def _tool_result_from_step(step: ExecutedStep) -> dict[str, Any]:
         "success": True,
         "kind": step.kind,
         "names": step.names,
+        "entity_ids": step.entity_ids,
     }
     if step.state is not None:
         result["state"] = step.state
     if step.seconds is not None:
         result["seconds"] = step.seconds
     return result
+
+
+def _display_targets(values: list[str]) -> str:
+    if not values:
+        return "that"
+    if len(values) == 1:
+        return values[0]
+    if len(values) == 2:
+        return f"{values[0]} and {values[1]}"
+    return ", ".join(values[:-1]) + f", and {values[-1]}"
+
+
+def describe_tool_call(tool_name: str, parameters: dict[str, Any]) -> str | None:
+    """Return a short narrated progress line for a planned tool call."""
+    name = _normalize_tool_name(tool_name)
+    targets = _normalize_name_list(parameters.get("names"))
+    if not targets:
+        targets = _normalize_name_list(parameters.get("name"))
+    if name == "control_lights":
+        state = str(parameters.get("state", "on")).strip().lower() or "on"
+        return f"Turning {state} {_display_targets(targets)}."
+    if name == "control_switches":
+        state = str(parameters.get("state", "on")).strip().lower() or "on"
+        return f"Switching {state} {_display_targets(targets)}."
+    if name == "media_player_command":
+        action = str(parameters.get("action", "control")).strip().lower() or "control"
+        return f"{action.capitalize()} {_display_targets(targets)}."
+    if name == "climate_set_temperature":
+        temperature_c = parameters.get("temperature_c")
+        if temperature_c is not None:
+            return f"Setting {_display_targets(targets)} to {temperature_c}C."
+        return f"Adjusting {_display_targets(targets)}."
+    if name == "wait":
+        seconds = parameters.get("seconds", parameters.get("duration"))
+        try:
+            seconds_value = max(0, min(int(float(seconds)), 60))
+        except Exception:
+            seconds_value = None
+        if seconds_value is not None:
+            return f"Waiting {seconds_value} seconds."
+        return "Waiting."
+    if name == "controlDevice":
+        return f"Calling {_display_targets(targets)}."
+    if name == "call_service_raw":
+        domain = str(parameters.get("domain", "")).strip()
+        service = str(parameters.get("service", "")).strip()
+        if domain and service:
+            return f"Calling {domain}.{service} for {_display_targets(targets)}."
+        return f"Calling a Home Assistant service for {_display_targets(targets)}."
+    return None
+
+
+def describe_tool_execution_result(result: ToolExecutionResult) -> str | None:
+    """Return a short narrated progress line for an executed tool step."""
+    if result.step is None:
+        if result.tool_name == "wait":
+            return "I couldn't wait as requested."
+        return "I couldn't complete that step."
+
+    step = result.step
+    joined_names = _display_targets(step.names or step.entity_ids)
+    if step.kind == "lights":
+        return f"{joined_names} is now {step.state}."
+    if step.kind == "switches":
+        return f"{joined_names} is now {step.state}."
+    if step.kind == "media_player":
+        return f"{joined_names} is now {step.state}."
+    if step.kind == "climate":
+        return f"{joined_names} is set to {step.state}."
+    if step.kind == "wait":
+        return f"Finished waiting {step.seconds} seconds."
+    if step.kind == "service":
+        return f"Called {step.state} for {joined_names}."
+    return None
 
 
 async def execute_tool_calls_detailed(

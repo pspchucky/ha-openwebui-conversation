@@ -12,6 +12,12 @@ The OpenWebUI integration adds a conversation agent powered by [OpenWebUI][openw
 
 Unlike the upstream project, this fork can execute supported Home Assistant actions locally when the model returns either native `tool_calls` or a prompt-style JSON tool plan in `message.content`.
 
+It also aligns more closely with the current upstream Assist clients:
+
+* web can consume native structured tool progress through `tool_calls` and `tool_result`
+* iOS can consume readable narrated progress through streamed assistant `content`
+* raw model chain-of-thought is not forwarded to users
+
 Supported local tools:
 
 * `home_assistant_tool/control_lights`
@@ -66,7 +72,7 @@ If you are customizing or debugging this fork, these files are the important one
 * [`custom_components/openwebui_conversation/conversation.py`](custom_components/openwebui_conversation/conversation.py)
   * Builds the message list sent to OpenWebUI.
   * Reads either one-shot or streamed model responses.
-  * Writes reasoning, tool calls, tool results, and the final answer into separate Assist chat-log entries.
+  * Streams narrated progress, tool calls, tool results, and the final answer in an Assist-compatible way.
 * [`custom_components/openwebui_conversation/local_executor.py`](custom_components/openwebui_conversation/local_executor.py)
   * Extracts native or prompt-style tool plans.
   * Executes supported Home Assistant actions locally in order.
@@ -143,8 +149,9 @@ Settings relating to the integration itself.
 | API Timeout   | The maximum amount of time (in seconds) to wait for a response from the API                                                      |
 | Language Code | The code for your preferred language. This is set to English (`en`) by default. A list of codes can be found [here][lang-codes]. |
 | Verify SSL    | Verify SSL certificates for HTTPS. Disable verification if you are using self signed certificates.                               |
-| Enable Streaming | Uses OpenWebUI's streaming API so Assist can show intermediate reasoning and tool activity before the final spoken reply.     |
-| Show Thinking and Tool Bubbles | Stores reasoning, tool calls, and tool results as separate Assist chat entries while keeping TTS focused on the final reply. |
+| Enable Streaming | Uses OpenWebUI's streaming API so Assist can show intermediate narrated progress and tool activity before the final spoken reply. |
+| Narrate Streaming Progress | Emits short semantic assistant progress messages such as planning, tool calls, waits, and wrapping up. Current streaming TTS paths may also speak these updates. |
+| Show Structured Tool Details | Stores native tool calls and tool results as separate Assist chat entries for clients that can render them. |
 
 #### Model Configuration
 The language model you want to use.
@@ -156,12 +163,23 @@ The language model you want to use.
 
 NOTE: Model properties should still be specified on the model itself in your OpenWebUI workspace. If you want the most reliable local action execution in this fork, enable **Native Tool Calling** on the OpenWebUI model.
 
-When both **Enable Streaming** and **Show Thinking and Tool Bubbles** are on, Assist should show:
+When **Enable Streaming** is on:
 
-1. a reasoning/thinking entry when the model emits `reasoning`
-2. a tool-call entry when the model emits native tool calls
-3. tool result entries for each locally executed action
-4. a final short assistant reply that is the only text sent to TTS
+1. the integration can stream readable assistant `content`
+2. web clients can receive native `tool_calls` and `tool_result`
+3. the final short assistant reply still arrives at the end of the run
+
+When **Narrate Streaming Progress** is also on:
+
+1. the integration emits semantic progress like `Hmm, let me think`, tool actions, waits, and `Wrapping up`
+2. those updates use the same assistant-content channel that current upstream iOS consumes
+3. if the active TTS path supports streaming assistant content, those updates may also be spoken mid-run
+
+When **Show Structured Tool Details** is on:
+
+1. native tool-call entries are stored separately
+2. tool-result entries are stored separately
+3. current web clients can show deeper action detail than iOS today
 
 #### Search Configuration
 Options related to performing a web search with OpenWebUI. The agent will perform a web search through OpenWebUI and have the model summarize the results.
