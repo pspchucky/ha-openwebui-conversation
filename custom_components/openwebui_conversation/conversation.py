@@ -64,6 +64,7 @@ from .local_executor import (
 )
 
 TOOL_ID_CACHE: dict[str, list[str]] = {}
+MAX_TOOL_FOLLOW_UP_ROUNDS = 4
 LOCAL_TOOL_SYSTEM_PROMPT = """You can control Home Assistant locally by returning tool calls.
 
 Supported tool names:
@@ -72,6 +73,7 @@ Supported tool names:
 - home_assistant_tool/media_player_command
 - home_assistant_tool/climate_set_temperature
 - home_assistant_tool/wait
+- home_assistant_tool/get_entity_state
 
 The wait tool takes: {"seconds": <integer>}
 
@@ -339,6 +341,46 @@ def _progress_content_delta(text: str, *, final: bool = False) -> dict[str, Any]
     return delta
 
 
+def _assistant_tool_call_message(
+    tool_calls: list[dict[str, Any]], assistant_text: str
+) -> dict[str, Any]:
+    native_tool_calls: list[dict[str, Any]] = []
+    for index, tool_call in enumerate(tool_calls, start=1):
+        name = str(tool_call.get("name", "")).strip()
+        parameters = tool_call.get("parameters")
+        if not name or not isinstance(parameters, dict):
+            continue
+        native_tool_calls.append(
+            {
+                "id": str(tool_call.get("id") or f"tool_call_{index}"),
+                "type": "function",
+                "function": {
+                    "name": name,
+                    "arguments": json.dumps(parameters, ensure_ascii=False),
+                },
+            }
+        )
+    return {
+        "role": "assistant",
+        "content": assistant_text,
+        "tool_calls": native_tool_calls,
+    }
+
+
+def _tool_result_messages(
+    execution_results: list[ToolExecutionResult],
+) -> list[dict[str, Any]]:
+    return [
+        {
+            "role": "tool",
+            "tool_call_id": result.tool_call_id,
+            "name": result.tool_name,
+            "content": json.dumps(result.tool_result, ensure_ascii=False),
+        }
+        for result in execution_results
+    ]
+
+
 class OpenWebUIAgent(
     conversation.ConversationEntity, conversation.AbstractConversationAgent
 ):
@@ -463,10 +505,9 @@ class OpenWebUIAgent(
                         )
                     )
             else:
-                response = await self.client.async_generate({**payload, "stream": False})
                 await self._async_add_nonstream_response(
                     chat_log,
-                    response,
+                    payload,
                     should_search=should_search,
                     alias_map=alias_map,
                 )
@@ -533,23 +574,40 @@ class OpenWebUIAgent(
     async def _async_add_nonstream_response(
         self,
         chat_log: conversation.ChatLog,
-        response: dict[str, Any],
+        payload: dict[str, Any],
         *,
         should_search: bool,
         alias_map: dict[str, str] | None = None,
     ) -> None:
         """Add a non-streamed response to the chat log."""
+        response = await self.client.async_generate({**payload, "stream": False})
         response_text = _assistant_text_from_response(response)
-        tool_calls = extract_tool_calls(response)
         execution_results: list[ToolExecutionResult] = []
+        flattened_tool_calls: list[dict[str, Any]] = []
+        followup_messages = list(payload.get("messages", []))
 
-        if tool_calls:
-            execution_results = await execute_tool_calls_detailed(
+        for _ in range(MAX_TOOL_FOLLOW_UP_ROUNDS):
+            tool_calls = extract_tool_calls(response)
+            if not tool_calls:
+                break
+            flattened_tool_calls.extend(tool_calls)
+            round_results = await execute_tool_calls_detailed(
                 self.hass, tool_calls, alias_map
             )
+            execution_results.extend(round_results)
+            followup_messages.append(
+                _assistant_tool_call_message(tool_calls, response_text)
+            )
+            followup_messages.extend(_tool_result_messages(round_results))
+            response = await self.client.async_generate(
+                {**payload, "messages": followup_messages, "stream": False}
+            )
+            response_text = _assistant_text_from_response(response)
+
+        if flattened_tool_calls:
             response_text = (
-                summarize_execution_results(execution_results)
-                or response_text
+                response_text
+                or summarize_execution_results(execution_results)
                 or "I found a tool call, but couldn't execute it successfully."
             )
         elif not response_text:
@@ -563,7 +621,7 @@ class OpenWebUIAgent(
         )
         await self._async_add_structured_response(
             chat_log,
-            tool_calls=tool_calls,
+            tool_calls=flattened_tool_calls,
             execution_results=execution_results,
             final_text=final_text,
         )
@@ -656,6 +714,9 @@ class OpenWebUIAgent(
         final_content = (
             _flush_stream_buffer(content_pending, force=True, sentence_safe=True) or ""
         ).strip()
+        followup_messages = list(payload.get("messages", []))
+        execution_results: list[ToolExecutionResult] = []
+        flattened_tool_calls: list[dict[str, Any]] = []
 
         if not tool_calls and full_content:
             prompt_plan = extract_tool_calls(
@@ -668,41 +729,61 @@ class OpenWebUIAgent(
         if tool_calls:
             if experimental_live_hook:
                 yield _progress_content_delta(_tool_flow_lead_in())
+            response_text = full_content
+            current_tool_calls = tool_calls
+            for _ in range(MAX_TOOL_FOLLOW_UP_ROUNDS):
+                if not current_tool_calls:
+                    break
+                flattened_tool_calls.extend(current_tool_calls)
+                tool_inputs = _tool_inputs_from_tool_calls(current_tool_calls)
+                if tool_inputs:
+                    yield {"role": "assistant", "tool_calls": tool_inputs}
 
-            tool_inputs = _tool_inputs_from_tool_calls(tool_calls)
-            if tool_inputs:
-                yield {"role": "assistant", "tool_calls": tool_inputs}
+                round_results: list[ToolExecutionResult] = []
+                for tool_call in current_tool_calls:
+                    if experimental_live_hook:
+                        planned_line = describe_tool_call(
+                            tool_call.get("name", ""),
+                            tool_call.get("parameters", {}),
+                        )
+                        if planned_line:
+                            yield _progress_content_delta(planned_line)
 
-            execution_results: list[ToolExecutionResult] = []
-            for tool_call in tool_calls:
-                if experimental_live_hook:
-                    planned_line = describe_tool_call(
-                        tool_call.get("name", ""),
-                        tool_call.get("parameters", {}),
-                    )
-                    if planned_line:
-                        yield _progress_content_delta(planned_line)
+                    execution_result = (
+                        await execute_tool_calls_detailed(
+                            self.hass, [tool_call], alias_map
+                        )
+                    )[0]
+                    round_results.append(execution_result)
+                    execution_results.append(execution_result)
 
-                execution_result = (
-                    await execute_tool_calls_detailed(self.hass, [tool_call], alias_map)
-                )[0]
-                execution_results.append(execution_result)
+                    yield {
+                        "role": "tool_result",
+                        "tool_call_id": execution_result.tool_call_id,
+                        "tool_name": execution_result.tool_name,
+                        "tool_result": execution_result.tool_result,
+                    }
 
-                yield {
-                    "role": "tool_result",
-                    "tool_call_id": execution_result.tool_call_id,
-                    "tool_name": execution_result.tool_name,
-                    "tool_result": execution_result.tool_result,
-                }
+                    if experimental_live_hook and execution_result.step is None:
+                        failure_line = describe_tool_execution_result(execution_result)
+                        if failure_line:
+                            yield _progress_content_delta(failure_line)
 
-                if experimental_live_hook and execution_result.step is None:
-                    failure_line = describe_tool_execution_result(execution_result)
-                    if failure_line:
-                        yield _progress_content_delta(failure_line)
+                followup_messages.append(
+                    _assistant_tool_call_message(current_tool_calls, response_text)
+                )
+                followup_messages.extend(_tool_result_messages(round_results))
+                response = await self.client.async_generate(
+                    {**payload, "messages": followup_messages, "stream": False}
+                )
+                response_text = _assistant_text_from_response(response)
+                current_tool_calls = extract_tool_calls(response)
 
-            final_text = summarize_execution_results(execution_results)
-            if not final_text:
-                final_text = "I found a tool call, but couldn't execute it successfully."
+            final_text = (
+                response_text
+                or summarize_execution_results(execution_results)
+                or "I found a tool call, but couldn't execute it successfully."
+            )
         else:
             final_text = full_content or final_content or "I didn't get a usable response from the model."
 
@@ -714,13 +795,13 @@ class OpenWebUIAgent(
         )
         if stream_state is not None:
             stream_state["final_text"] = final_text
-            stream_state["tool_flow"] = bool(tool_calls)
+            stream_state["tool_flow"] = bool(flattened_tool_calls or tool_calls)
             stream_state["final_streamed"] = False
-        if tool_calls and experimental_live_hook and final_text:
+        if (flattened_tool_calls or tool_calls) and experimental_live_hook and final_text:
             if stream_state is not None:
                 stream_state["final_streamed"] = True
             yield _progress_content_delta(final_text, final=True)
-        elif not tool_calls:
+        elif not (flattened_tool_calls or tool_calls):
             yield {"role": "assistant", "content": final_text}
 
     async def _async_entry_update_listener(

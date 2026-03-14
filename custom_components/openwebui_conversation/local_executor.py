@@ -25,6 +25,7 @@ class ExecutedStep:
     entity_ids: list[str]
     state: str | None = None
     seconds: int | None = None
+    details: dict[str, Any] | None = None
 
 
 @dataclass
@@ -613,6 +614,74 @@ async def _execute_wait(parameters: dict[str, Any]) -> ExecutedStep | None:
     return ExecutedStep("wait", [], [], seconds=seconds)
 
 
+async def _execute_get_entity_state(
+    hass: HomeAssistant,
+    parameters: dict[str, Any],
+    alias_map: dict[str, str] | None = None,
+) -> ExecutedStep | None:
+    targets = (
+        _normalize_name_list(parameters.get("name_or_id"))
+        or _normalize_name_list(parameters.get("name"))
+        or _normalize_name_list(parameters.get("names"))
+        or _normalize_name_list(parameters.get("entity_id"))
+    )
+    if not targets:
+        return None
+    entity_ids, resolved_names = _resolve_entities(hass, targets, alias_map=alias_map)
+    if not entity_ids:
+        LOGGER.debug("get_entity_state could not resolve targets: %s", parameters)
+        return None
+    entity_id = entity_ids[0]
+    state = hass.states.get(entity_id)
+    if state is None:
+        return None
+    display_name = resolved_names[0] if resolved_names else str(state.name or entity_id)
+    return ExecutedStep(
+        "entity_state",
+        [display_name],
+        [entity_id],
+        state.state,
+        details={
+            "entity": {
+                "entity_id": entity_id,
+                "name": str(state.name or entity_id),
+                "state": state.state,
+                "attributes": dict(state.attributes),
+            }
+        },
+    )
+
+
+async def _execute_list_entities(
+    hass: HomeAssistant,
+    parameters: dict[str, Any],
+) -> ExecutedStep | None:
+    domain = str(parameters.get("domain", "")).strip()
+    entities = get_exposed_entities(hass)
+    if domain:
+        entities = [
+            entity
+            for entity in entities
+            if entity["entity_id"].startswith(f"{domain}.")
+        ]
+    normalized_entities = [
+        {
+            "entity_id": entity["entity_id"],
+            "name": entity["name"],
+            "aliases": list(entity.get("aliases", [])),
+            "state": entity.get("state"),
+        }
+        for entity in entities
+    ]
+    return ExecutedStep(
+        "entity_list",
+        [entity["name"] for entity in normalized_entities],
+        [entity["entity_id"] for entity in normalized_entities],
+        state=domain or None,
+        details={"entities": normalized_entities},
+    )
+
+
 async def _execute_control_device(
     hass: HomeAssistant,
     parameters: dict[str, Any],
@@ -684,6 +753,8 @@ def _tool_result_from_step(step: ExecutedStep) -> dict[str, Any]:
         result["state"] = step.state
     if step.seconds is not None:
         result["seconds"] = step.seconds
+    if step.details:
+        result.update(step.details)
     return result
 
 
@@ -726,6 +797,13 @@ def describe_tool_call(tool_name: str, parameters: dict[str, Any]) -> str | None
         if seconds_value is not None:
             return f"Waiting {seconds_value} seconds."
         return "Waiting."
+    if name == "get_entity_state":
+        return f"Checking {_display_targets(targets)}."
+    if name == "list_entities":
+        domain = str(parameters.get("domain", "")).strip()
+        if domain:
+            return f"Checking available {domain} entities."
+        return "Checking available entities."
     if name == "controlDevice":
         return f"Calling {_display_targets(targets)}."
     if name == "call_service_raw":
@@ -763,6 +841,10 @@ def describe_tool_execution_result(result: ToolExecutionResult) -> str | None:
         return f"{joined_names} is set to {step.state}."
     if step.kind == "wait":
         return f"Finished waiting {step.seconds} seconds."
+    if step.kind == "entity_state":
+        return f"{joined_names} is currently {step.state}."
+    if step.kind == "entity_list":
+        return f"Found {len(step.entity_ids)} available entities."
     if step.kind == "service":
         return f"Called {step.state} for {joined_names}."
     return None
@@ -792,6 +874,10 @@ async def execute_tool_calls_detailed(
             step = await _execute_climate_set_temperature(hass, parameters, alias_map)
         elif name == "wait":
             step = await _execute_wait(parameters)
+        elif name == "get_entity_state":
+            step = await _execute_get_entity_state(hass, parameters, alias_map)
+        elif name == "list_entities":
+            step = await _execute_list_entities(hass, parameters)
         elif name == "controlDevice":
             step = await _execute_control_device(hass, parameters, alias_map)
         elif name == "call_service_raw":
@@ -805,6 +891,7 @@ async def execute_tool_calls_detailed(
                 "control_switches",
                 "media_player_command",
                 "climate_set_temperature",
+                "get_entity_state",
                 "controlDevice",
                 "call_service_raw",
             }:
@@ -865,6 +952,10 @@ def summarize_executed_steps(steps: list[ExecutedStep]) -> str | None:
             return f"Done. The temperature for {joined_names} is set to {step.state}."
         if step.kind == "wait":
             return f"Done. Waited {step.seconds} seconds."
+        if step.kind == "entity_state":
+            return f"Done. {joined_names} is currently {step.state}."
+        if step.kind == "entity_list":
+            return f"Done. Found {len(step.entity_ids)} available entities."
         if step.kind == "service":
             return f"Done. Called {step.state} for {joined_names}."
 
@@ -881,6 +972,10 @@ def summarize_executed_steps(steps: list[ExecutedStep]) -> str | None:
             parts.append(f"set {joined_names} to {step.state}")
         elif step.kind == "wait":
             parts.append(f"waited {step.seconds} seconds")
+        elif step.kind == "entity_state":
+            parts.append(f"checked {joined_names} and found it {step.state}")
+        elif step.kind == "entity_list":
+            parts.append(f"found {len(step.entity_ids)} available entities")
         elif step.kind == "service":
             parts.append(f"called {step.state} for {joined_names}")
     if not parts:

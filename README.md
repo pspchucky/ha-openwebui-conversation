@@ -26,9 +26,12 @@ Supported local tools:
 * `home_assistant_tool/media_player_command`
 * `home_assistant_tool/climate_set_temperature`
 * `home_assistant_tool/wait`
+* `home_assistant_tool/get_entity_state`
 * `home_assistant_tool/light_on_then_off_after_delay` (example OpenWebUI tool script)
 
 This makes multi-step local sequences possible, including patterns like "turn on the middle bedroom lights, wait 5 seconds, then turn them off", as long as the model returns the tool calls in order.
+
+The fork now also supports bounded local tool follow-up rounds. That means if the model first checks state with tools like `get_entity_state` and then needs a second tool round to finish the action, the integration can feed those tool results back into the model and continue up to a small safe limit before producing the final answer.
 
 This conversation agent can search the internet for you, using sentence triggers you can configure, if Web Search is set up in OpenWebUI. For more details, see the relevant Options section below.
 
