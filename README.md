@@ -50,18 +50,26 @@ This fork now includes a ready-to-copy example set for the NaBu + MLX + Home Ass
 
 These are meant to be practical examples you can adapt directly instead of rebuilding the setup from scratch.
 
-When your system prompt includes a `Home Layout` section like:
+When your NaBu/OpenWebUI system prompt includes a `Home Layout` section like:
 
 * `Middle bedroom -> light.michaels_old_room`
 
-the fork will first try to resolve those prompt-defined names back to the mapped entity IDs during local execution. It can recover these mappings from the live system prompt and from OpenWebUI model metadata when that prompt is stored with the model/workspace. Home Assistant exposed names, aliases, and entity area names are still used as the normal fallback path.
+the preferred path is now:
+
+1. the MLX/OpenWebUI gateway reads that prompt
+2. the gateway injects normalized `entity_ids` into tool arguments
+3. the Home Assistant fork trusts those `entity_ids` first during local execution
+
+The fork no longer depends on bundled NaBu room-name fallbacks for the primary path. Generic fallback resolution still exists through:
+
+* `Local Alias Overrides`
+* Home Assistant exposed names and aliases
+* Home Assistant area names for exposed entities
 
 If you want a guaranteed local mapping, you can also add manual alias overrides in the integration options using lines like:
 
 * `Middle bedroom -> light.michaels_old_room`
 * `Box fan -> switch.fan_outlet_2`
-
-For the shipped NaBu example setup, the fork also includes a bundled fallback alias map matching the example Home Layout. Those mappings are only useful if the referenced entity IDs actually exist in Home Assistant.
 
 ## Recommended Native Tool Setup
 
@@ -80,11 +88,11 @@ If you are customizing or debugging this fork, these files are the important one
 * [`custom_components/openwebui_conversation/conversation.py`](custom_components/openwebui_conversation/conversation.py)
   * Builds the message list sent to OpenWebUI.
   * Reads either one-shot or streamed model responses.
-  * Streams narrated progress, tool calls, tool results, and the final answer in an Assist-compatible way.
+  * Keeps stable tool runs quiet by default, while exposing an experimental live hook mode for current Assist clients.
 * [`custom_components/openwebui_conversation/local_executor.py`](custom_components/openwebui_conversation/local_executor.py)
   * Extracts native or prompt-style tool plans.
   * Executes supported Home Assistant actions locally in order.
-  * Supports `wait` for delayed local action chains.
+  * Trusts explicit `entity_ids` first, then falls back to local overrides and exposed Home Assistant names.
 * [`custom_components/openwebui_conversation/api.py`](custom_components/openwebui_conversation/api.py)
   * Handles the HTTP call to OpenWebUI.
   * Supports both one-shot JSON responses and streamed SSE responses.
@@ -158,7 +166,7 @@ Settings relating to the integration itself.
 | Language Code | The code for your preferred language. This is set to English (`en`) by default. A list of codes can be found [here][lang-codes]. |
 | Verify SSL    | Verify SSL certificates for HTTPS. Disable verification if you are using self signed certificates.                               |
 | Enable Streaming | Uses OpenWebUI's streaming API so Assist can show streamed replies and structured tool activity before the final spoken reply. |
-| Narrate Streaming Progress | Best-effort option for extra streamed assistant narration. Tool runs may still suppress narrated `content` so current Assist pipelines can speak the final reply reliably. |
+| Narrate Streaming Progress | Experimental live tool-run hook. This intentionally reuses current Assist streaming behavior so some clients can speak or display live progress again. iOS may duplicate the final text in this mode. |
 | Show Structured Tool Details | Stores native tool calls and tool results as separate Assist chat entries for clients that can render them. |
 | Local Alias Overrides | Optional manual `Friendly name -> entity_id` mappings used by the local executor before other fallback resolution paths. |
 
@@ -180,16 +188,28 @@ When **Enable Streaming** is on:
 
 When **Narrate Streaming Progress** is also on:
 
-1. the integration can add extra streamed assistant narration where the current Assist pipeline can handle it safely
-2. tool runs still prioritize the final short spoken reply over mid-run narration
-3. current upstream Assist does not reliably support narrated tool progress and a clean final spoken reply in the same run
-4. web clients should rely on structured `tool_calls` and `tool_result` for the deepest live tool detail today
+1. tool runs emit integration-owned progress sentences before and between tool steps
+2. the integration intentionally drives the current Assist streaming path again for experimentation
+3. web clients generally handle this better than iOS today
+4. current iOS main app may append the streamed final text and then append the `intent-end` final text again
+5. stable tool execution remains the default when this option is off
 
 When **Show Structured Tool Details** is on:
 
 1. native tool-call entries are stored separately
 2. tool-result entries are stored separately
 3. current web clients can show deeper action detail than iOS today
+
+## Gateway-First NaBu Resolution
+
+For NaBu/OpenWebUI setups, the recommended architecture is now:
+
+1. OpenWebUI sends the large NaBu system prompt
+2. the MLX/OpenAI-compatible gateway parses `Home Layout`
+3. the gateway rewrites tool arguments to include `entity_ids`
+4. the Home Assistant fork executes those `entity_ids` directly
+
+This keeps NaBu-specific room mappings close to the model/workspace layer instead of hardcoding them into the Home Assistant integration.
 
 #### Search Configuration
 Options related to performing a web search with OpenWebUI. The agent will perform a web search through OpenWebUI and have the model summarize the results.

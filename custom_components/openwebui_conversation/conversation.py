@@ -56,6 +56,8 @@ from .const import (
 from .exceptions import ApiCommError, ApiJsonError, ApiTimeoutError
 from .local_executor import (
     ToolExecutionResult,
+    describe_tool_call,
+    describe_tool_execution_result,
     execute_tool_calls_detailed,
     extract_tool_calls,
     summarize_execution_results,
@@ -78,15 +80,8 @@ For device actions, respond with either native tool_calls or a JSON object in me
 
 For multi-step requests, return multiple tool calls in the correct order. If the user asks to wait before another action, include a wait tool call between those actions.
 """
-BUNDLED_NABU_ALIAS_OVERRIDES = """Middle bedroom -> light.michaels_old_room
-Middle room -> light.michaels_old_room
-Box fan -> switch.fan_outlet_2
-Kitchen -> light.sink
-Dining Room -> light.dining_table
-Living Room -> light.couch_light
-Hallway -> light.hallway
-Bug zapper -> switch.bug_zapper
-"""
+
+
 def _flatten_text_content(content: object) -> str:
     if isinstance(content, str):
         return content.strip()
@@ -269,29 +264,6 @@ def _alias_keys(name: str) -> set[str]:
     }
 
 
-def _extract_prompt_alias_map(messages: list[dict[str, Any]]) -> dict[str, str]:
-    """Extract Home Layout aliases from system prompts."""
-    alias_map: dict[str, str] = {}
-    for message in messages:
-        if message.get("role") != "system":
-            continue
-        content = message.get("content")
-        if not isinstance(content, str):
-            continue
-        for line in content.splitlines():
-            matched = _HOME_LAYOUT_LINE.match(line)
-            if not matched:
-                continue
-            name = _clean_layout_name(matched.group("name"))
-            entity_id = matched.group("entity_id").strip()
-            if not name or not entity_id:
-                continue
-            for key in _alias_keys(name):
-                if key:
-                    alias_map[key] = entity_id
-    return alias_map
-
-
 def _extract_alias_map_from_text(content: str) -> dict[str, str]:
     alias_map: dict[str, str] = {}
     for line in content.splitlines():
@@ -306,22 +278,6 @@ def _extract_alias_map_from_text(content: str) -> dict[str, str]:
             if key:
                 alias_map[key] = entity_id
     return alias_map
-
-
-def _extract_alias_map_from_object(value: Any) -> dict[str, str]:
-    alias_map: dict[str, str] = {}
-    if isinstance(value, str):
-        return _extract_alias_map_from_text(value)
-    if isinstance(value, dict):
-        for child in value.values():
-            alias_map.update(_extract_alias_map_from_object(child))
-        return alias_map
-    if isinstance(value, list):
-        for child in value:
-            alias_map.update(_extract_alias_map_from_object(child))
-    return alias_map
-
-
 def _flush_stream_buffer(
     pending: list[str],
     *,
@@ -370,6 +326,17 @@ def _is_tool_capable(payload: dict[str, Any]) -> bool:
         ):
             return True
     return False
+
+
+def _tool_flow_lead_in() -> str:
+    return "Okay, I'll handle that now."
+
+
+def _progress_content_delta(text: str, *, final: bool = False) -> dict[str, Any]:
+    delta: dict[str, Any] = {"role": "assistant", "content": text}
+    if not final:
+        delta["native"] = {"openwebui_progress": True}
+    return delta
 
 
 class OpenWebUIAgent(
@@ -421,7 +388,6 @@ class OpenWebUIAgent(
             CONF_SHOW_DEBUG_BUBBLES, DEFAULT_SHOW_DEBUG_BUBBLES
         )
         self.markdown_parser = MarkdownIt(renderer_cls=RendererPlain)
-        self._model_alias_maps: dict[str, dict[str, str]] = {}
 
     @property
     def supported_languages(self) -> list[str] | Literal["*"]:
@@ -459,16 +425,11 @@ class OpenWebUIAgent(
                 prompt,
                 include_local_tool_prompt=not tool_ids,
             )
-            alias_map = {
-                **_extract_alias_map_from_text(BUNDLED_NABU_ALIAS_OVERRIDES),
-                **self._model_alias_maps.get(model, {}),
-                **_extract_prompt_alias_map(message_list),
-                **_extract_alias_map_from_text(
-                    self.entry.options.get(
-                        CONF_LOCAL_ALIAS_OVERRIDES, DEFAULT_LOCAL_ALIAS_OVERRIDES
-                    )
-                ),
-            }
+            alias_map = _extract_alias_map_from_text(
+                self.entry.options.get(
+                    CONF_LOCAL_ALIAS_OVERRIDES, DEFAULT_LOCAL_ALIAS_OVERRIDES
+                )
+            )
             payload = {
                 "features": {"web_search": should_search},
                 "tool_ids": tool_ids,
@@ -490,7 +451,11 @@ class OpenWebUIAgent(
                     ),
                 ):
                     pass
-                if stream_state.get("tool_flow") and stream_state.get("final_text"):
+                if (
+                    stream_state.get("tool_flow")
+                    and stream_state.get("final_text")
+                    and not stream_state.get("final_streamed")
+                ):
                     chat_log.async_add_assistant_content_without_tools(
                         conversation.AssistantContent(
                             agent_id=self.entity_id,
@@ -555,14 +520,13 @@ class OpenWebUIAgent(
         """Fetch model metadata and cache tool ids."""
         model = self.entry.options.get(CONF_MODEL, DEFAULT_MODEL)
         tool_ids = TOOL_ID_CACHE.get(model)
-        if tool_ids is not None and model in self._model_alias_maps:
+        if tool_ids is not None:
             return tool_ids
 
         models = await self.client.async_get_models()
         matching_model = next((m for m in models if m["id"] == model), {})
         tool_ids = matching_model.get("info", {}).get("meta", {}).get("toolIds", [])
         TOOL_ID_CACHE[model] = tool_ids
-        self._model_alias_maps[model] = _extract_alias_map_from_object(matching_model)
         LOGGER.debug("Using tool_ids for model %s: %s", model, tool_ids)
         return tool_ids
 
@@ -655,6 +619,7 @@ class OpenWebUIAgent(
         buffered_content: list[str] = []
         full_content_parts: list[str] = []
         tool_capable = _is_tool_capable(payload)
+        experimental_live_hook = bool(self.narrate_streaming_progress)
 
         async for chunk in self.client.async_generate_stream({**payload, "stream": True}):
             choices = chunk.get("choices") or []
@@ -701,25 +666,39 @@ class OpenWebUIAgent(
                 final_content = ""
 
         if tool_calls:
-            if self.show_debug_bubbles:
-                tool_inputs = _tool_inputs_from_tool_calls(tool_calls)
-                if tool_inputs:
-                    yield {"role": "assistant", "tool_calls": tool_inputs}
+            if experimental_live_hook:
+                yield _progress_content_delta(_tool_flow_lead_in())
+
+            tool_inputs = _tool_inputs_from_tool_calls(tool_calls)
+            if tool_inputs:
+                yield {"role": "assistant", "tool_calls": tool_inputs}
 
             execution_results: list[ToolExecutionResult] = []
             for tool_call in tool_calls:
+                if experimental_live_hook:
+                    planned_line = describe_tool_call(
+                        tool_call.get("name", ""),
+                        tool_call.get("parameters", {}),
+                    )
+                    if planned_line:
+                        yield _progress_content_delta(planned_line)
+
                 execution_result = (
                     await execute_tool_calls_detailed(self.hass, [tool_call], alias_map)
                 )[0]
                 execution_results.append(execution_result)
 
-                if self.show_debug_bubbles:
-                    yield {
-                        "role": "tool_result",
-                        "tool_call_id": execution_result.tool_call_id,
-                        "tool_name": execution_result.tool_name,
-                        "tool_result": execution_result.tool_result,
-                    }
+                yield {
+                    "role": "tool_result",
+                    "tool_call_id": execution_result.tool_call_id,
+                    "tool_name": execution_result.tool_name,
+                    "tool_result": execution_result.tool_result,
+                }
+
+                if experimental_live_hook and execution_result.step is None:
+                    failure_line = describe_tool_execution_result(execution_result)
+                    if failure_line:
+                        yield _progress_content_delta(failure_line)
 
             final_text = summarize_execution_results(execution_results)
             if not final_text:
@@ -736,7 +715,12 @@ class OpenWebUIAgent(
         if stream_state is not None:
             stream_state["final_text"] = final_text
             stream_state["tool_flow"] = bool(tool_calls)
-        if not tool_calls:
+            stream_state["final_streamed"] = False
+        if tool_calls and experimental_live_hook and final_text:
+            if stream_state is not None:
+                stream_state["final_streamed"] = True
+            yield _progress_content_delta(final_text, final=True)
+        elif not tool_calls:
             yield {"role": "assistant", "content": final_text}
 
     async def _async_entry_update_listener(

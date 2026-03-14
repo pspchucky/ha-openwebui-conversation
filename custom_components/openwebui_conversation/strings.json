@@ -37,7 +37,7 @@
                     "lang_code": "Language Code",
                     "verify_ssl": "Verify SSL",
                     "enable_streaming": "Enable Streaming",
-                    "narrate_streaming_progress": "Narrate Streaming Progress (best effort)",
+                    "narrate_streaming_progress": "Experimental Live Tool-Run Hook",
                     "show_debug_bubbles": "Show Structured Tool Details",
                     "local_alias_overrides": "Local Alias Overrides"
                 }

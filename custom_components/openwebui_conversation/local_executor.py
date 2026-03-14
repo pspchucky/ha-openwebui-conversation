@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers import entity_registry
 
 from .const import LOGGER
 from .helpers import get_exposed_entities
@@ -383,11 +384,15 @@ def _build_resolution_failure(
 
 
 def _entity_ids_from_parameters(parameters: dict[str, Any]) -> list[str]:
+    for key in ("entity_id", "entity_ids", "entityID", "entityIDs"):
+        values = _normalize_name_list(parameters.get(key))
+        if values:
+            return values
+    return []
+
+
+def _names_or_ids_from_parameters(parameters: dict[str, Any]) -> list[str]:
     for key in (
-        "entity_id",
-        "entity_ids",
-        "entityID",
-        "entityIDs",
         "names_or_ids",
     ):
         values = _normalize_name_list(parameters.get(key))
@@ -399,6 +404,34 @@ def _entity_ids_from_parameters(parameters: dict[str, Any]) -> list[str]:
     return []
 
 
+def _resolve_direct_entity_ids(
+    hass: HomeAssistant,
+    entity_ids: list[str],
+    expected_domain: str | None = None,
+) -> tuple[list[str], list[str]]:
+    registry = entity_registry.async_get(hass)
+    resolved_ids: list[str] = []
+    resolved_names: list[str] = []
+    for entity_id in entity_ids:
+        candidate = entity_id.strip()
+        if not candidate or "." not in candidate:
+            continue
+        if expected_domain and not candidate.startswith(f"{expected_domain}."):
+            continue
+        state = hass.states.get(candidate)
+        if state is None:
+            continue
+        if candidate not in resolved_ids:
+            resolved_ids.append(candidate)
+            entry = registry.async_get(candidate)
+            resolved_names.append(
+                entry.original_name
+                or entry.name
+                or str(getattr(state, "name", "") or candidate)
+            )
+    return resolved_ids, resolved_names
+
+
 def _resolve_entity_targets(
     hass: HomeAssistant,
     parameters: dict[str, Any],
@@ -407,12 +440,14 @@ def _resolve_entity_targets(
 ) -> tuple[list[str], list[str]]:
     entity_candidates = _entity_ids_from_parameters(parameters)
     if entity_candidates:
-        return _resolve_entities(hass, entity_candidates, expected_domain, alias_map)
+        return _resolve_direct_entity_ids(hass, entity_candidates, expected_domain)
     names = _normalize_name_list(parameters.get("names"))
     if not names:
         names = _normalize_name_list(parameters.get("name"))
     if not names:
         names = _normalize_name_list(parameters.get("names_csv"))
+    if not names:
+        names = _names_or_ids_from_parameters(parameters)
     return _resolve_entities(hass, names, expected_domain, alias_map)
 
 
