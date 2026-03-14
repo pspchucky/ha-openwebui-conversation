@@ -281,6 +281,36 @@ def _extract_prompt_alias_map(messages: list[dict[str, Any]]) -> dict[str, str]:
     return alias_map
 
 
+def _extract_alias_map_from_text(content: str) -> dict[str, str]:
+    alias_map: dict[str, str] = {}
+    for line in content.splitlines():
+        matched = _HOME_LAYOUT_LINE.match(line)
+        if not matched:
+            continue
+        name = _clean_layout_name(matched.group("name"))
+        entity_id = matched.group("entity_id").strip()
+        if not name or not entity_id:
+            continue
+        for key in _alias_keys(name):
+            if key:
+                alias_map[key] = entity_id
+    return alias_map
+
+
+def _extract_alias_map_from_object(value: Any) -> dict[str, str]:
+    alias_map: dict[str, str] = {}
+    if isinstance(value, str):
+        return _extract_alias_map_from_text(value)
+    if isinstance(value, dict):
+        for child in value.values():
+            alias_map.update(_extract_alias_map_from_object(child))
+        return alias_map
+    if isinstance(value, list):
+        for child in value:
+            alias_map.update(_extract_alias_map_from_object(child))
+    return alias_map
+
+
 def _flush_stream_buffer(
     pending: list[str],
     *,
@@ -380,6 +410,7 @@ class OpenWebUIAgent(
             CONF_SHOW_DEBUG_BUBBLES, DEFAULT_SHOW_DEBUG_BUBBLES
         )
         self.markdown_parser = MarkdownIt(renderer_cls=RendererPlain)
+        self._model_alias_maps: dict[str, dict[str, str]] = {}
 
     @property
     def supported_languages(self) -> list[str] | Literal["*"]:
@@ -417,7 +448,10 @@ class OpenWebUIAgent(
                 prompt,
                 include_local_tool_prompt=not tool_ids,
             )
-            alias_map = _extract_prompt_alias_map(message_list)
+            alias_map = {
+                **self._model_alias_maps.get(model, {}),
+                **_extract_prompt_alias_map(message_list),
+            }
             payload = {
                 "features": {"web_search": should_search},
                 "tool_ids": tool_ids,
@@ -504,13 +538,14 @@ class OpenWebUIAgent(
         """Fetch model metadata and cache tool ids."""
         model = self.entry.options.get(CONF_MODEL, DEFAULT_MODEL)
         tool_ids = TOOL_ID_CACHE.get(model)
-        if tool_ids is not None:
+        if tool_ids is not None and model in self._model_alias_maps:
             return tool_ids
 
         models = await self.client.async_get_models()
         matching_model = next((m for m in models if m["id"] == model), {})
         tool_ids = matching_model.get("info", {}).get("meta", {}).get("toolIds", [])
         TOOL_ID_CACHE[model] = tool_ids
+        self._model_alias_maps[model] = _extract_alias_map_from_object(matching_model)
         LOGGER.debug("Using tool_ids for model %s: %s", model, tool_ids)
         return tool_ids
 

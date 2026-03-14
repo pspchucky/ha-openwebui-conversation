@@ -54,7 +54,7 @@ When your system prompt includes a `Home Layout` section like:
 
 * `Middle bedroom -> light.michaels_old_room`
 
-the fork will first try to resolve those prompt-defined names back to the mapped entity IDs during local execution. Home Assistant exposed names and aliases are still used as the normal fallback path.
+the fork will first try to resolve those prompt-defined names back to the mapped entity IDs during local execution. It can recover these mappings from the live system prompt and from OpenWebUI model metadata when that prompt is stored with the model/workspace. Home Assistant exposed names and aliases are still used as the normal fallback path.
 
 ## Recommended Native Tool Setup
 
