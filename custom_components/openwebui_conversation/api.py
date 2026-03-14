@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import AsyncGenerator
+import json
 import socket
 
 import aiohttp
@@ -60,6 +62,69 @@ class OpenWebUIApiClient:
                 "Authorization": f"Bearer {self._api_key}",
             },
         )
+
+    async def async_generate_stream(
+        self,
+        data: dict | None = None,
+    ) -> AsyncGenerator[dict, None]:
+        """Generate a streamed completion from the API."""
+        try:
+            async with async_timeout.timeout(self.timeout):
+                response = await self._session.request(
+                    method="post",
+                    url=f"{self._base_url}/api/chat/completions",
+                    headers={
+                        "Content-type": "application/json; charset=UTF-8",
+                        "Authorization": f"Bearer {self._api_key}",
+                    },
+                    json=data,
+                    verify_ssl=self._verify_ssl,
+                )
+
+                if response.status == 404:
+                    error_json = await response.json()
+                    raise ApiJsonError(error_json["error"])
+
+                response.raise_for_status()
+
+                pending_data: list[str] = []
+                async for raw_line in response.content:
+                    line = raw_line.decode("utf-8", errors="ignore").rstrip("\r\n")
+                    if not line:
+                        payload = "\n".join(pending_data).strip()
+                        pending_data.clear()
+                        if not payload:
+                            continue
+                        if payload == "[DONE]":
+                            break
+                        try:
+                            yield json.loads(payload)
+                        except json.JSONDecodeError:
+                            continue
+                        continue
+
+                    if line.startswith(":"):
+                        continue
+
+                    if line.startswith("data:"):
+                        pending_data.append(line[5:].lstrip())
+                    else:
+                        pending_data.append(line)
+
+                payload = "\n".join(pending_data).strip()
+                if payload and payload != "[DONE]":
+                    try:
+                        yield json.loads(payload)
+                    except json.JSONDecodeError:
+                        return
+        except ApiJsonError as e:
+            raise e
+        except asyncio.TimeoutError as e:
+            raise ApiTimeoutError("timeout while talking to the server") from e
+        except (aiohttp.ClientError, socket.gaierror) as e:
+            raise ApiCommError("unknown error while talking to the server") from e
+        except Exception as e:  # pylint: disable=broad-except
+            raise ApiClientError("something really went wrong!") from e
 
     async def _api_wrapper(
         self,

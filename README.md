@@ -59,15 +59,15 @@ If you are customizing or debugging this fork, these files are the important one
 
 * [`custom_components/openwebui_conversation/conversation.py`](custom_components/openwebui_conversation/conversation.py)
   * Builds the message list sent to OpenWebUI.
-  * Reads the model response.
-  * Can show `Thinking:` and `Tool calls:` in the final Assist response when the model returns reasoning/tool data.
+  * Reads either one-shot or streamed model responses.
+  * Writes reasoning, tool calls, tool results, and the final answer into separate Assist chat-log entries.
 * [`custom_components/openwebui_conversation/local_executor.py`](custom_components/openwebui_conversation/local_executor.py)
   * Extracts native or prompt-style tool plans.
   * Executes supported Home Assistant actions locally in order.
   * Supports `wait` for delayed local action chains.
 * [`custom_components/openwebui_conversation/api.py`](custom_components/openwebui_conversation/api.py)
   * Handles the HTTP call to OpenWebUI.
-  * Uses a one-shot JSON response today rather than true streaming.
+  * Supports both one-shot JSON responses and streamed SSE responses.
 
 ## Example Flow
 
@@ -137,6 +137,8 @@ Settings relating to the integration itself.
 | API Timeout   | The maximum amount of time (in seconds) to wait for a response from the API                                                      |
 | Language Code | The code for your preferred language. This is set to English (`en`) by default. A list of codes can be found [here][lang-codes]. |
 | Verify SSL    | Verify SSL certificates for HTTPS. Disable verification if you are using self signed certificates.                               |
+| Enable Streaming | Uses OpenWebUI's streaming API so Assist can show intermediate reasoning and tool activity before the final spoken reply.     |
+| Show Thinking and Tool Bubbles | Stores reasoning, tool calls, and tool results as separate Assist chat entries while keeping TTS focused on the final reply. |
 
 #### Model Configuration
 The language model you want to use.
@@ -147,6 +149,13 @@ The language model you want to use.
 | Strip Markdown | Whether or not to strip Markdown formatting from the model's output. This can be useful for models that tend to generate responses with Markdown formatting, as HomeAssistant doesn't render Markdown text, and TTS engines will often read out individual Markdown formatting characters. |
 
 NOTE: Model properties should still be specified on the model itself in your OpenWebUI workspace. If you want the most reliable local action execution in this fork, enable **Native Tool Calling** on the OpenWebUI model.
+
+When both **Enable Streaming** and **Show Thinking and Tool Bubbles** are on, Assist should show:
+
+1. a reasoning/thinking entry when the model emits `reasoning`
+2. a tool-call entry when the model emits native tool calls
+3. tool result entries for each locally executed action
+4. a final short assistant reply that is the only text sent to TTS
 
 #### Search Configuration
 Options related to performing a web search with OpenWebUI. The agent will perform a web search through OpenWebUI and have the model summarize the results.

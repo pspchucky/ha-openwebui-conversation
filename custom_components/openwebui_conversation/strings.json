@@ -35,7 +35,9 @@
                 "data": {
                     "timeout": "API Timeout",
                     "lang_code": "Language Code",
-                    "verify_ssl": "Verify SSL"
+                    "verify_ssl": "Verify SSL",
+                    "enable_streaming": "Enable Streaming",
+                    "show_debug_bubbles": "Show Thinking and Tool Bubbles"
                 }
             },
             "model_config": {

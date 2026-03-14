@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from typing import Literal
+from collections.abc import AsyncGenerator
+import json
+from typing import Any, Literal
 
 from hassil import recognize
 from hassil.intents import Intents
@@ -11,47 +13,48 @@ from homeassistant.components import assist_pipeline, conversation
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import MATCH_ALL
 from homeassistant.core import HomeAssistant
-from homeassistant.exceptions import (
-    HomeAssistantError,
-)
-from homeassistant.helpers import intent
+from homeassistant.exceptions import HomeAssistantError
+from homeassistant.helpers import intent, llm
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
-from homeassistant.util import ulid
 
 from markdown_it import MarkdownIt
 from mdit_plain.renderer import RendererPlain
 
 from .api import OpenWebUIApiClient
 from .const import (
-    LOGGER,
-    DO_SEARCH_INTENT,
-    CONF_BASE_URL,
     CONF_API_KEY,
-    CONF_TIMEOUT,
-    CONF_MODEL,
+    CONF_BASE_URL,
+    CONF_ENABLE_STREAMING,
     CONF_LANGUAGE_CODE,
+    CONF_MODEL,
     CONF_SEARCH_ENABLED,
-    CONF_SEARCH_SENTENCES,
     CONF_SEARCH_RESULT_PREFIX,
+    CONF_SEARCH_SENTENCES,
+    CONF_SHOW_DEBUG_BUBBLES,
     CONF_STRIP_MARKDOWN,
+    CONF_TIMEOUT,
     CONF_VERIFY_SSL,
-    DEFAULT_TIMEOUT,
-    DEFAULT_MODEL,
+    DEFAULT_ENABLE_STREAMING,
     DEFAULT_LANGUAGE_CODE,
+    DEFAULT_MODEL,
     DEFAULT_SEARCH_ENABLED,
-    DEFAULT_SEARCH_SENTENCES,
     DEFAULT_SEARCH_RESULT_PREFIX,
+    DEFAULT_SEARCH_SENTENCES,
+    DEFAULT_SHOW_DEBUG_BUBBLES,
     DEFAULT_STRIP_MARKDOWN,
+    DEFAULT_TIMEOUT,
     DEFAULT_VERIFY_SSL,
+    DO_SEARCH_INTENT,
+    LOGGER,
 )
 from .exceptions import ApiCommError, ApiJsonError, ApiTimeoutError
 from .local_executor import (
-    execute_tool_calls,
+    ToolExecutionResult,
+    execute_tool_calls_detailed,
     extract_tool_calls,
     summarize_executed_steps,
 )
-from .message import Message
 
 TOOL_ID_CACHE: dict[str, list[str]] = {}
 LOCAL_TOOL_SYSTEM_PROMPT = """You can control Home Assistant locally by returning tool calls.
@@ -87,7 +90,7 @@ def _flatten_text_content(content: object) -> str:
     return ""
 
 
-def _assistant_text_from_response(response: dict) -> str:
+def _assistant_text_from_response(response: dict[str, Any]) -> str:
     choices = response.get("choices") or []
     if not choices:
         return ""
@@ -95,53 +98,134 @@ def _assistant_text_from_response(response: dict) -> str:
     return _flatten_text_content(message.get("content"))
 
 
-def _assistant_reasoning_from_response(response: dict) -> str:
+def _assistant_reasoning_from_response(response: dict[str, Any]) -> str:
     choices = response.get("choices") or []
     if not choices:
         return ""
     message = (choices[0] or {}).get("message") or {}
-    for key in ("reasoning", "reasoning_content"):
+    for key in ("reasoning", "reasoning_content", "thinking_content"):
         value = message.get(key)
         if isinstance(value, str) and value.strip():
             return value.strip()
     return ""
 
 
-def _format_tool_calls_for_debug(tool_calls: list[dict]) -> str:
-    if not tool_calls:
-        return ""
-    lines: list[str] = ["Tool calls:"]
-    for idx, tool_call in enumerate(tool_calls, start=1):
-        name = str(tool_call.get("name", "")).strip() or "unknown"
+def _tool_inputs_from_tool_calls(tool_calls: list[dict[str, Any]]) -> list[llm.ToolInput]:
+    tool_inputs: list[llm.ToolInput] = []
+    for index, tool_call in enumerate(tool_calls, start=1):
+        name = str(tool_call.get("name", "")).strip()
         parameters = tool_call.get("parameters")
-        params_text = str(parameters) if isinstance(parameters, dict) else "{}"
-        lines.append(f"{idx}. {name} {params_text}")
-    return "\n".join(lines)
+        if not name or not isinstance(parameters, dict):
+            continue
+        tool_inputs.append(
+            llm.ToolInput(
+                tool_name=name,
+                tool_args=parameters,
+                id=str(tool_call.get("id") or f"tool_call_{index}"),
+                external=True,
+            )
+        )
+    return tool_inputs
 
 
-def _compose_debug_response(
+def _normalize_stream_tool_calls(
+    partial_tool_calls: dict[int, dict[str, str]],
+) -> list[dict[str, Any]]:
+    tool_calls: list[dict[str, Any]] = []
+    for index in sorted(partial_tool_calls):
+        partial = partial_tool_calls[index]
+        name = partial.get("name", "").strip()
+        if not name:
+            continue
+        arguments_text = partial.get("arguments", "").strip()
+        parameters: dict[str, Any] = {}
+        if arguments_text:
+            try:
+                parsed = json.loads(arguments_text)
+            except json.JSONDecodeError:
+                parsed = None
+            if isinstance(parsed, dict):
+                parameters = parsed
+        tool_calls.append(
+            {
+                "id": partial.get("id") or f"tool_call_{index + 1}",
+                "name": name,
+                "parameters": parameters,
+            }
+        )
+    return tool_calls
+
+
+def _accumulate_stream_tool_calls(
+    partial_tool_calls: dict[int, dict[str, str]],
+    delta_tool_calls: list[dict[str, Any]],
+) -> None:
+    for delta_tool_call in delta_tool_calls:
+        if not isinstance(delta_tool_call, dict):
+            continue
+        index = delta_tool_call.get("index")
+        if not isinstance(index, int):
+            index = len(partial_tool_calls)
+        partial = partial_tool_calls.setdefault(
+            index, {"id": "", "name": "", "arguments": ""}
+        )
+        tool_call_id = delta_tool_call.get("id")
+        if isinstance(tool_call_id, str) and tool_call_id.strip():
+            partial["id"] = tool_call_id.strip()
+        function = delta_tool_call.get("function") or {}
+        if isinstance(function, dict):
+            name = function.get("name")
+            if isinstance(name, str) and name:
+                partial["name"] += name
+            arguments = function.get("arguments")
+            if isinstance(arguments, str) and arguments:
+                partial["arguments"] += arguments
+
+
+def _delta_text(delta: dict[str, Any], *keys: str) -> str:
+    for key in keys:
+        value = delta.get(key)
+        if isinstance(value, str) and value:
+            return value
+    return ""
+
+
+def _format_final_text(
+    text: str,
     *,
-    reasoning: str,
-    tool_calls: list[dict],
-    final_text: str,
+    strip_markdown: bool,
+    markdown_parser: MarkdownIt,
+    search_prefix: str | None = None,
 ) -> str:
-    parts: list[str] = []
-    if reasoning:
-        parts.append(f"Thinking:\n{reasoning}")
-    tool_debug = _format_tool_calls_for_debug(tool_calls)
-    if tool_debug:
-        parts.append(tool_debug)
-    if final_text:
-        parts.append(final_text)
-    return "\n\n".join(part for part in parts if part).strip()
+    final_text = text.strip()
+    if strip_markdown and final_text:
+        final_text = markdown_parser.render(final_text)
+    if search_prefix and final_text:
+        final_text = f"{search_prefix} {final_text}"
+    return final_text
 
-async def async_setup_entry(
-    hass: HomeAssistant, entry: ConfigEntry, async_add_entities: AddEntitiesCallback
-) -> bool:
-    """Set up OpenWebUI Conversation Agent from a config entry."""
-    agent = OpenWebUIAgent(hass, entry)
-    async_add_entities([agent])
-    return True
+
+def _messages_from_chat_log(
+    chat_log: conversation.ChatLog,
+    prompt: str,
+    *,
+    include_local_tool_prompt: bool,
+) -> list[dict[str, Any]]:
+    messages: list[dict[str, Any]] = []
+    if include_local_tool_prompt:
+        messages.append({"role": "system", "content": LOCAL_TOOL_SYSTEM_PROMPT})
+
+    for content in chat_log.content[:-1]:
+        role = getattr(content, "role", "")
+        if role == "system" and getattr(content, "content", None):
+            messages.append({"role": "system", "content": content.content})
+        elif role == "user" and getattr(content, "content", None):
+            messages.append({"role": "user", "content": content.content})
+        elif role == "assistant" and getattr(content, "content", None):
+            messages.append({"role": "assistant", "content": content.content})
+
+    messages.append({"role": "user", "content": prompt})
+    return messages
 
 
 class OpenWebUIAgent(
@@ -150,6 +234,7 @@ class OpenWebUIAgent(
     """OpenWebUI conversation agent."""
 
     _attr_has_entity_name = True
+    _attr_supports_streaming = True
 
     def __init__(self, hass: HomeAssistant, entry: ConfigEntry) -> None:
         """Initialize the agent."""
@@ -159,11 +244,10 @@ class OpenWebUIAgent(
         self.client = OpenWebUIApiClient(
             base_url=entry.data[CONF_BASE_URL],
             api_key=entry.data[CONF_API_KEY],
-            timeout=entry.options.get(CONF_TIMEOUT, DEFAULT_TIMEOUT),
+            timeout=self.timeout,
             session=async_get_clientsession(hass),
             verify_ssl=entry.options.get(CONF_VERIFY_SSL, DEFAULT_VERIFY_SSL),
         )
-        self.history: dict[str, list[Message]] = {}
         self.search_enabled = entry.options.get(
             CONF_SEARCH_ENABLED, DEFAULT_SEARCH_ENABLED
         )
@@ -182,6 +266,12 @@ class OpenWebUIAgent(
         self._attr_unique_id = entry.entry_id
         self.strip_markdown = entry.options.get(
             CONF_STRIP_MARKDOWN, DEFAULT_STRIP_MARKDOWN
+        )
+        self.enable_streaming = entry.options.get(
+            CONF_ENABLE_STREAMING, DEFAULT_ENABLE_STREAMING
+        )
+        self.show_debug_bubbles = entry.options.get(
+            CONF_SHOW_DEBUG_BUBBLES, DEFAULT_SHOW_DEBUG_BUBBLES
         )
         self.markdown_parser = MarkdownIt(renderer_cls=RendererPlain)
 
@@ -206,49 +296,42 @@ class OpenWebUIAgent(
         conversation.async_unset_agent(self.hass, self.entry)
         await super().async_will_remove_from_hass()
 
-    async def async_process(
-        self, user_input: conversation.ConversationInput
+    async def _async_handle_message(
+        self,
+        user_input: conversation.ConversationInput,
+        chat_log: conversation.ChatLog,
     ) -> conversation.ConversationResult:
         """Process a sentence."""
-
-        if user_input.conversation_id in self.history:
-            conversation_id = user_input.conversation_id
-            conversation_history = self.history[conversation_id]
-        else:
-            conversation_id = ulid.ulid()
-            conversation_history = []
-
-        user_message = Message("user", user_input.text)
-        prompt = user_message.message
-
-        should_search = False
-
-        if self.search_enabled and len(self.search_sentences):
-            i = Intents.from_dict(
-                {
-                    "language": self.lang,
-                    "settings": {"ignore_whitespace": True},
-                    "intents": {
-                        DO_SEARCH_INTENT: {
-                            "data": [{"sentences": self.search_sentences}]
-                        }
-                    },
-                    "lists": {"query": {"wildcard": True}},
-                }
-            )
-            r = recognize(prompt, i)
-            if r is not None:
-                if (
-                    r.intent.name == DO_SEARCH_INTENT
-                    and r.entities.get("query", None) is not None
-                ):
-                    prompt = r.entities["query"].value
-                    should_search = True
+        prompt, should_search = self._prepare_prompt(user_input.text)
 
         try:
-            response = await self.query(
-                prompt, conversation_history, should_search
-            )
+            tool_ids = await self._async_get_tool_ids()
+            payload = {
+                "features": {"web_search": should_search},
+                "tool_ids": tool_ids,
+                "model": self.entry.options.get(CONF_MODEL, DEFAULT_MODEL),
+                "messages": _messages_from_chat_log(
+                    chat_log,
+                    prompt,
+                    include_local_tool_prompt=not tool_ids,
+                ),
+                "params": {"keep_alive": "-1m"},
+                "options": {"keep_alive": -1},
+            }
+
+            if self.enable_streaming:
+                async for _content in chat_log.async_add_delta_content_stream(
+                    self.entity_id,
+                    self._async_stream_chat(payload, should_search=should_search),
+                ):
+                    pass
+            else:
+                response = await self.client.async_generate({**payload, "stream": False})
+                await self._async_add_nonstream_response(
+                    chat_log,
+                    response,
+                    should_search=should_search,
+                )
         except (ApiCommError, ApiJsonError, ApiTimeoutError) as err:
             LOGGER.error("Error generating prompt: %s", err)
             intent_response = intent.IntentResponse(language=user_input.language)
@@ -257,7 +340,7 @@ class OpenWebUIAgent(
                 f"Something went wrong, {err}",
             )
             return conversation.ConversationResult(
-                response=intent_response, conversation_id=conversation_id
+                response=intent_response, conversation_id=chat_log.conversation_id
             )
         except HomeAssistantError as err:
             LOGGER.error("Something went wrong: %s", err)
@@ -267,93 +350,224 @@ class OpenWebUIAgent(
                 "Something went wrong, please check the logs for more information.",
             )
             return conversation.ConversationResult(
-                response=intent_response, conversation_id=conversation_id
+                response=intent_response, conversation_id=chat_log.conversation_id
             )
 
-        response_data = _assistant_text_from_response(response)
-        reasoning_data = _assistant_reasoning_from_response(response)
-        tool_calls = extract_tool_calls(response)
-        if tool_calls:
-            LOGGER.debug("Executing local tool calls: %s", tool_calls)
-            executed_steps = await execute_tool_calls(self.hass, tool_calls)
-            local_summary = summarize_executed_steps(executed_steps)
-            if local_summary:
-                response_data = local_summary
-            else:
-                LOGGER.warning("Tool calls returned no executable steps: %s", tool_calls)
-                if "running the requested tool now" in response_data.lower():
-                    response_data = ""
-                response_data = (
-                    response_data
-                    or "I found a tool call, but couldn't map it to an exposed Home Assistant entity."
-                )
-        elif not response_data:
-            LOGGER.warning("Model response had no message content and no tool calls: %s", response)
-            response_data = "I didn't get a usable response from the model."
-        response_data = _compose_debug_response(
-            reasoning=reasoning_data,
-            tool_calls=tool_calls,
-            final_text=response_data,
-        )
-        if self.strip_markdown:
-            response_data = self.markdown_parser.render(response_data)
-        if should_search:
-            response_data = f"{self.search_result_prefix} {response_data}"
-        response_message = Message("assistant", response_data)
+        return conversation.async_get_result_from_chat_log(user_input, chat_log)
 
-        conversation_history.append(user_message)
-        conversation_history.append(response_message)
-        self.history[conversation_id] = conversation_history
+    def _prepare_prompt(self, prompt: str) -> tuple[str, bool]:
+        """Apply search trigger detection."""
+        if not (self.search_enabled and self.search_sentences):
+            return prompt, False
 
-        intent_response = intent.IntentResponse(language=user_input.language)
-
-        intent_response.async_set_speech(response_data)
-        return conversation.ConversationResult(
-            response=intent_response, conversation_id=conversation_id
-        )
-
-    async def query(self, prompt: str, history: list[Message], search: bool) -> any:
-        """Process a sentence."""
-        model = self.entry.options.get(CONF_MODEL, DEFAULT_MODEL)
-
-        LOGGER.debug("Prompt for %s: %s", model, prompt)
-
-        # Fetch model metadata
-        tool_ids = TOOL_ID_CACHE.get(model)
-        if tool_ids is None:
-            LOGGER.debug("Caching tool_ids for model %s: %s", model, tool_ids)
-            models = await self.client.async_get_models()
-            matching_model = next((m for m in models if m["id"] == model), {})
-            tool_ids = matching_model.get("info", {}).get("meta", {}).get("toolIds", [])
-            TOOL_ID_CACHE[model] = tool_ids
-
-        LOGGER.debug("Using tool_ids for model %s: %s", model, tool_ids)
-
-        message_list = []
-        if not tool_ids:
-            message_list.append({"role": "system", "content": LOCAL_TOOL_SYSTEM_PROMPT})
-        message_list.extend({"role": x.role, "content": x.message} for x in history)
-        message_list.append({"role": "user", "content": prompt})
-
-        result = await self.client.async_generate(
+        intents = Intents.from_dict(
             {
-                "features": {"web_search": search},
-                "tool_ids": tool_ids,
-                "model": model,
-                "messages": message_list,
-                "params": {"keep_alive": "-1m"},
-                "options": {"keep_alive": -1},
-                "stream": False,
+                "language": self.lang,
+                "settings": {"ignore_whitespace": True},
+                "intents": {DO_SEARCH_INTENT: {"data": [{"sentences": self.search_sentences}]}},
+                "lists": {"query": {"wildcard": True}},
             }
         )
+        recognized = recognize(prompt, intents)
+        if recognized is None:
+            return prompt, False
+        if (
+            recognized.intent.name == DO_SEARCH_INTENT
+            and recognized.entities.get("query") is not None
+        ):
+            return recognized.entities["query"].value, True
+        return prompt, False
 
-        response: str = result["choices"][0]["message"]["content"]
-        LOGGER.debug("Response %s", response)
-        return result
+    async def _async_get_tool_ids(self) -> list[str]:
+        """Fetch model metadata and cache tool ids."""
+        model = self.entry.options.get(CONF_MODEL, DEFAULT_MODEL)
+        tool_ids = TOOL_ID_CACHE.get(model)
+        if tool_ids is not None:
+            return tool_ids
+
+        models = await self.client.async_get_models()
+        matching_model = next((m for m in models if m["id"] == model), {})
+        tool_ids = matching_model.get("info", {}).get("meta", {}).get("toolIds", [])
+        TOOL_ID_CACHE[model] = tool_ids
+        LOGGER.debug("Using tool_ids for model %s: %s", model, tool_ids)
+        return tool_ids
+
+    async def _async_add_nonstream_response(
+        self,
+        chat_log: conversation.ChatLog,
+        response: dict[str, Any],
+        *,
+        should_search: bool,
+    ) -> None:
+        """Add a non-streamed response to the chat log."""
+        response_text = _assistant_text_from_response(response)
+        reasoning_text = _assistant_reasoning_from_response(response)
+        tool_calls = extract_tool_calls(response)
+        execution_results: list[ToolExecutionResult] = []
+
+        if tool_calls:
+            execution_results = await execute_tool_calls_detailed(self.hass, tool_calls)
+            steps = [result.step for result in execution_results if result.step is not None]
+            response_text = (
+                summarize_executed_steps(steps)
+                or response_text
+                or "I found a tool call, but couldn't execute it successfully."
+            )
+        elif not response_text:
+            response_text = "I didn't get a usable response from the model."
+
+        final_text = _format_final_text(
+            response_text,
+            strip_markdown=self.strip_markdown,
+            markdown_parser=self.markdown_parser,
+            search_prefix=self.search_result_prefix if should_search else None,
+        )
+        await self._async_add_structured_response(
+            chat_log,
+            reasoning_text=reasoning_text,
+            tool_calls=tool_calls,
+            execution_results=execution_results,
+            final_text=final_text,
+        )
+
+    async def _async_add_structured_response(
+        self,
+        chat_log: conversation.ChatLog,
+        *,
+        reasoning_text: str,
+        tool_calls: list[dict[str, Any]],
+        execution_results: list[ToolExecutionResult],
+        final_text: str,
+    ) -> None:
+        """Store the response in the chat log with separate assistant entries."""
+        if self.show_debug_bubbles and reasoning_text:
+            chat_log.async_add_assistant_content_without_tools(
+                conversation.AssistantContent(
+                    agent_id=self.entity_id,
+                    thinking_content=reasoning_text,
+                )
+            )
+
+        if self.show_debug_bubbles and tool_calls:
+            tool_inputs = _tool_inputs_from_tool_calls(tool_calls)
+            if tool_inputs:
+                chat_log.async_add_assistant_content_without_tools(
+                    conversation.AssistantContent(
+                        agent_id=self.entity_id,
+                        tool_calls=tool_inputs,
+                    )
+                )
+
+        if self.show_debug_bubbles:
+            for execution_result in execution_results:
+                chat_log.async_add_assistant_content_without_tools(
+                    conversation.ToolResultContent(
+                        agent_id=self.entity_id,
+                        tool_call_id=execution_result.tool_call_id,
+                        tool_name=execution_result.tool_name,
+                        tool_result=execution_result.tool_result,
+                    )
+                )
+
+        chat_log.async_add_assistant_content_without_tools(
+            conversation.AssistantContent(
+                agent_id=self.entity_id,
+                content=final_text,
+            )
+        )
+
+    async def _async_stream_chat(
+        self,
+        payload: dict[str, Any],
+        *,
+        should_search: bool,
+    ) -> AsyncGenerator[dict[str, Any], None]:
+        """Stream the response into Home Assistant chat log deltas."""
+        partial_tool_calls: dict[int, dict[str, str]] = {}
+        reasoning_seen = False
+        content_parts: list[str] = []
+
+        async for chunk in self.client.async_generate_stream({**payload, "stream": True}):
+            choices = chunk.get("choices") or []
+            if not choices:
+                continue
+            choice = choices[0] or {}
+            delta = choice.get("delta") or choice.get("message") or {}
+
+            reasoning_delta = _delta_text(
+                delta, "reasoning", "reasoning_content", "thinking_content"
+            )
+            if reasoning_delta:
+                reasoning_seen = True
+                if self.show_debug_bubbles:
+                    yield {"thinking_content": reasoning_delta}
+
+            delta_tool_calls = delta.get("tool_calls")
+            if isinstance(delta_tool_calls, list):
+                _accumulate_stream_tool_calls(partial_tool_calls, delta_tool_calls)
+
+            content_delta = _flatten_text_content(delta.get("content"))
+            if content_delta:
+                content_parts.append(content_delta)
+
+        tool_calls = _normalize_stream_tool_calls(partial_tool_calls)
+        final_content = "".join(content_parts).strip()
+
+        if not tool_calls and final_content:
+            prompt_plan = extract_tool_calls(
+                {"choices": [{"message": {"content": final_content}}]}
+            )
+            if prompt_plan:
+                tool_calls = prompt_plan
+                final_content = ""
+
+        if tool_calls:
+            if self.show_debug_bubbles and reasoning_seen:
+                yield {"role": "assistant"}
+            if self.show_debug_bubbles:
+                tool_inputs = _tool_inputs_from_tool_calls(tool_calls)
+                if tool_inputs:
+                    yield {"role": "assistant", "tool_calls": tool_inputs}
+
+            execution_results = await execute_tool_calls_detailed(self.hass, tool_calls)
+            if self.show_debug_bubbles:
+                for execution_result in execution_results:
+                    yield {
+                        "role": "tool_result",
+                        "tool_call_id": execution_result.tool_call_id,
+                        "tool_name": execution_result.tool_name,
+                        "tool_result": execution_result.tool_result,
+                    }
+
+            steps = [result.step for result in execution_results if result.step is not None]
+            final_text = summarize_executed_steps(steps)
+            if not final_text:
+                final_text = (
+                    final_content
+                    or "I found a tool call, but couldn't execute it successfully."
+                )
+        else:
+            final_text = final_content or "I didn't get a usable response from the model."
+
+        final_text = _format_final_text(
+            final_text,
+            strip_markdown=self.strip_markdown,
+            markdown_parser=self.markdown_parser,
+            search_prefix=self.search_result_prefix if should_search else None,
+        )
+        yield {"role": "assistant", "content": final_text}
 
     async def _async_entry_update_listener(
         self, hass: HomeAssistant, entry: ConfigEntry
     ) -> None:
         """Handle options update."""
-        # Reload as we update device info + entity name + supported features
         await hass.config_entries.async_reload(entry.entry_id)
+
+
+async def async_setup_entry(
+    hass: HomeAssistant, entry: ConfigEntry, async_add_entities: AddEntitiesCallback
+) -> bool:
+    """Set up OpenWebUI Conversation Agent from a config entry."""
+    agent = OpenWebUIAgent(hass, entry)
+    async_add_entities([agent])
+    return True

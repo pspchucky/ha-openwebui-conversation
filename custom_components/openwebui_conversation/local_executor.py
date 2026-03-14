@@ -24,6 +24,17 @@ class ExecutedStep:
     seconds: int | None = None
 
 
+@dataclass
+class ToolExecutionResult:
+    """A locally executed tool call with structured result data."""
+
+    tool_call_id: str
+    tool_name: str
+    parameters: dict[str, Any]
+    step: ExecutedStep | None
+    tool_result: dict[str, Any]
+
+
 def _normalize_tool_name(name: str | None) -> str:
     if not isinstance(name, str):
         return ""
@@ -108,7 +119,16 @@ def extract_tool_calls(response: dict[str, Any]) -> list[dict[str, Any]]:
                     args = parsed if isinstance(parsed, dict) else {}
             if not isinstance(args, dict):
                 args = {}
-            normalized_calls.append({"name": name, "parameters": args})
+            normalized_calls.append(
+                {
+                    "id": str(
+                        (tool_call or {}).get("id")
+                        or f"tool_call_{len(normalized_calls) + 1}"
+                    ),
+                    "name": name,
+                    "parameters": args,
+                }
+            )
         if normalized_calls:
             return normalized_calls
 
@@ -130,7 +150,15 @@ def extract_tool_calls(response: dict[str, Any]) -> list[dict[str, Any]]:
             params = parsed if isinstance(parsed, dict) else {}
         if not isinstance(params, dict):
             params = {}
-        normalized_calls.append({"name": name, "parameters": params})
+        normalized_calls.append(
+            {
+                "id": str(
+                    tool_call.get("id") or f"tool_call_{len(normalized_calls) + 1}"
+                ),
+                "name": name,
+                "parameters": params,
+            }
+        )
     return normalized_calls
 
 
@@ -407,12 +435,27 @@ async def _execute_call_service_raw(
     return ExecutedStep("service", resolved_names or entity_ids, f"{domain}.{service}")
 
 
-async def execute_tool_calls(
+def _tool_result_from_step(step: ExecutedStep) -> dict[str, Any]:
+    """Convert an executed step into a tool result payload."""
+    result: dict[str, Any] = {
+        "success": True,
+        "kind": step.kind,
+        "names": step.names,
+    }
+    if step.state is not None:
+        result["state"] = step.state
+    if step.seconds is not None:
+        result["seconds"] = step.seconds
+    return result
+
+
+async def execute_tool_calls_detailed(
     hass: HomeAssistant, tool_calls: list[dict[str, Any]]
-) -> list[ExecutedStep]:
-    """Execute supported tool calls in order."""
-    steps: list[ExecutedStep] = []
-    for tool_call in tool_calls:
+) -> list[ToolExecutionResult]:
+    """Execute supported tool calls in order with structured results."""
+    results: list[ToolExecutionResult] = []
+    for index, tool_call in enumerate(tool_calls, start=1):
+        tool_call_id = str(tool_call.get("id") or f"tool_call_{index}")
         name = _normalize_tool_name(tool_call.get("name"))
         parameters = tool_call.get("parameters")
         if not isinstance(parameters, dict):
@@ -434,11 +477,33 @@ async def execute_tool_calls(
             step = await _execute_call_service_raw(hass, parameters)
         else:
             LOGGER.debug("Ignoring unsupported local tool call: %s", name)
-        if step is not None:
-            steps.append(step)
-        else:
+        if step is None:
             LOGGER.debug("Tool call produced no executed step: %s", tool_call)
-    return steps
+            tool_result = {
+                "success": False,
+                "error": "unsupported_or_unresolved_tool_call",
+                "tool_name": name or "unknown",
+            }
+        else:
+            tool_result = _tool_result_from_step(step)
+        results.append(
+            ToolExecutionResult(
+                tool_call_id=tool_call_id,
+                tool_name=name or "unknown",
+                parameters=parameters,
+                step=step,
+                tool_result=tool_result,
+            )
+        )
+    return results
+
+
+async def execute_tool_calls(
+    hass: HomeAssistant, tool_calls: list[dict[str, Any]]
+) -> list[ExecutedStep]:
+    """Execute supported tool calls in order."""
+    results = await execute_tool_calls_detailed(hass, tool_calls)
+    return [result.step for result in results if result.step is not None]
 
 
 def summarize_executed_steps(steps: list[ExecutedStep]) -> str | None:

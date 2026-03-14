@@ -41,6 +41,8 @@ from .const import (
     CONF_SEARCH_RESULT_PREFIX,
     CONF_STRIP_MARKDOWN,
     CONF_VERIFY_SSL,
+    CONF_ENABLE_STREAMING,
+    CONF_SHOW_DEBUG_BUBBLES,
     DEFAULT_SERVICE_NAME,
     DEFAULT_BASE_URL,
     DEFAULT_TIMEOUT,
@@ -51,6 +53,8 @@ from .const import (
     DEFAULT_SEARCH_RESULT_PREFIX,
     DEFAULT_STRIP_MARKDOWN,
     DEFAULT_VERIFY_SSL,
+    DEFAULT_ENABLE_STREAMING,
+    DEFAULT_SHOW_DEBUG_BUBBLES,
 )
 from .exceptions import ApiClientError, ApiCommError, ApiTimeoutError
 
@@ -77,6 +81,8 @@ DEFAULT_OPTIONS = types.MappingProxyType(
         CONF_SEARCH_SENTENCES: DEFAULT_SEARCH_SENTENCES,
         CONF_SEARCH_RESULT_PREFIX: DEFAULT_SEARCH_RESULT_PREFIX,
         CONF_STRIP_MARKDOWN: DEFAULT_STRIP_MARKDOWN,
+        CONF_ENABLE_STREAMING: DEFAULT_ENABLE_STREAMING,
+        CONF_SHOW_DEBUG_BUBBLES: DEFAULT_SHOW_DEBUG_BUBBLES,
     }
 )
 
@@ -245,7 +251,25 @@ def openwebui_schema_general_config(options: MappingProxyType[str, Any]) -> dict
                 )
             },
             default=DEFAULT_VERIFY_SSL,
-        ): BooleanSelector(BooleanSelectorConfig())
+        ): BooleanSelector(BooleanSelectorConfig()),
+        vol.Required(
+            CONF_ENABLE_STREAMING,
+            description={
+                "suggested_value": options.get(
+                    CONF_ENABLE_STREAMING, DEFAULT_ENABLE_STREAMING
+                )
+            },
+            default=DEFAULT_ENABLE_STREAMING,
+        ): BooleanSelector(BooleanSelectorConfig()),
+        vol.Required(
+            CONF_SHOW_DEBUG_BUBBLES,
+            description={
+                "suggested_value": options.get(
+                    CONF_SHOW_DEBUG_BUBBLES, DEFAULT_SHOW_DEBUG_BUBBLES
+                )
+            },
+            default=DEFAULT_SHOW_DEBUG_BUBBLES,
+        ): BooleanSelector(BooleanSelectorConfig()),
     }
 
 

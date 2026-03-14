@@ -22,6 +22,8 @@ CONF_SEARCH_SENTENCES = "search_sentences"
 CONF_SEARCH_RESULT_PREFIX = "search_result_prefix"
 CONF_STRIP_MARKDOWN = "strip_markdown"
 CONF_VERIFY_SSL = "verify_ssl"
+CONF_ENABLE_STREAMING = "enable_streaming"
+CONF_SHOW_DEBUG_BUBBLES = "show_debug_bubbles"
 
 DEFAULT_SERVICE_NAME = "OpenWebUI"
 DEFAULT_BASE_URL = "http://openwebui.homeassistant.local"
@@ -34,3 +36,5 @@ search [the web | the internet] for {query}"""
 DEFAULT_SEARCH_RESULT_PREFIX = "Based on a search of the internet: "
 DEFAULT_STRIP_MARKDOWN = False
 DEFAULT_VERIFY_SSL = True
+DEFAULT_ENABLE_STREAMING = True
+DEFAULT_SHOW_DEBUG_BUBBLES = True
