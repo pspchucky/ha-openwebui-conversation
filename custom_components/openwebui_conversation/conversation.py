@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import AsyncGenerator
 import json
+import re
 from typing import Any, Literal
 
 from hassil import recognize
@@ -228,6 +229,80 @@ def _messages_from_chat_log(
     return messages
 
 
+_HOME_LAYOUT_LINE = re.compile(
+    r"^\s*[-*]?\s*(?P<name>.+?)\s*(?:->|→)\s*(?P<entity_id>[a-z0-9_]+\.[a-z0-9_]+)\s*$",
+    re.IGNORECASE,
+)
+
+
+def _clean_layout_name(value: str) -> str:
+    text = value.strip()
+    text = re.sub(r"`", "", text)
+    text = re.sub(r"\*\*", "", text)
+    text = re.sub(r"\*", "", text)
+    text = re.sub(r"^[-:\s]+", "", text)
+    text = re.sub(r"[:\s]+$", "", text)
+    return text.strip()
+
+
+def _alias_keys(name: str) -> set[str]:
+    text = re.sub(r"\s+", " ", name.casefold()).strip()
+    normalized = text.replace("_", " ").replace("-", " ")
+    normalized = re.sub(r"\s+", " ", normalized).strip()
+    return {
+        name,
+        text,
+        normalized,
+        re.sub(r"^the\s+", "", normalized),
+    }
+
+
+def _extract_prompt_alias_map(messages: list[dict[str, Any]]) -> dict[str, str]:
+    """Extract Home Layout aliases from system prompts."""
+    alias_map: dict[str, str] = {}
+    for message in messages:
+        if message.get("role") != "system":
+            continue
+        content = message.get("content")
+        if not isinstance(content, str):
+            continue
+        for line in content.splitlines():
+            matched = _HOME_LAYOUT_LINE.match(line)
+            if not matched:
+                continue
+            name = _clean_layout_name(matched.group("name"))
+            entity_id = matched.group("entity_id").strip()
+            if not name or not entity_id:
+                continue
+            for key in _alias_keys(name):
+                if key:
+                    alias_map[key] = entity_id
+    return alias_map
+
+
+def _flush_stream_buffer(
+    pending: list[str],
+    *,
+    force: bool = False,
+) -> str:
+    """Emit larger readable chunks instead of token fragments."""
+    if not pending:
+        return ""
+    text = "".join(pending)
+    if not force:
+        if len(text) < 24 and not re.search(r"[\s.,!?;:\n]$", text):
+            return ""
+        split_match = re.search(r"^(.+[\s.,!?;:\n])(.*)$", text, re.DOTALL)
+        if split_match:
+            emit = split_match.group(1)
+            remainder = split_match.group(2)
+            pending[:] = [remainder] if remainder else []
+            return emit
+        return ""
+    pending.clear()
+    return text
+
+
 class OpenWebUIAgent(
     conversation.ConversationEntity, conversation.AbstractConversationAgent
 ):
@@ -306,15 +381,17 @@ class OpenWebUIAgent(
 
         try:
             tool_ids = await self._async_get_tool_ids()
+            message_list = _messages_from_chat_log(
+                chat_log,
+                prompt,
+                include_local_tool_prompt=not tool_ids,
+            )
+            alias_map = _extract_prompt_alias_map(message_list)
             payload = {
                 "features": {"web_search": should_search},
                 "tool_ids": tool_ids,
                 "model": self.entry.options.get(CONF_MODEL, DEFAULT_MODEL),
-                "messages": _messages_from_chat_log(
-                    chat_log,
-                    prompt,
-                    include_local_tool_prompt=not tool_ids,
-                ),
+                "messages": message_list,
                 "params": {"keep_alive": "-1m"},
                 "options": {"keep_alive": -1},
             }
@@ -322,7 +399,11 @@ class OpenWebUIAgent(
             if self.enable_streaming:
                 async for _content in chat_log.async_add_delta_content_stream(
                     self.entity_id,
-                    self._async_stream_chat(payload, should_search=should_search),
+                    self._async_stream_chat(
+                        payload,
+                        should_search=should_search,
+                        alias_map=alias_map,
+                    ),
                 ):
                     pass
             else:
@@ -331,6 +412,7 @@ class OpenWebUIAgent(
                     chat_log,
                     response,
                     should_search=should_search,
+                    alias_map=alias_map,
                 )
         except (ApiCommError, ApiJsonError, ApiTimeoutError) as err:
             LOGGER.error("Error generating prompt: %s", err)
@@ -398,6 +480,7 @@ class OpenWebUIAgent(
         response: dict[str, Any],
         *,
         should_search: bool,
+        alias_map: dict[str, str] | None = None,
     ) -> None:
         """Add a non-streamed response to the chat log."""
         response_text = _assistant_text_from_response(response)
@@ -406,7 +489,9 @@ class OpenWebUIAgent(
         execution_results: list[ToolExecutionResult] = []
 
         if tool_calls:
-            execution_results = await execute_tool_calls_detailed(self.hass, tool_calls)
+            execution_results = await execute_tool_calls_detailed(
+                self.hass, tool_calls, alias_map
+            )
             steps = [result.step for result in execution_results if result.step is not None]
             response_text = (
                 summarize_executed_steps(steps)
@@ -481,11 +566,15 @@ class OpenWebUIAgent(
         payload: dict[str, Any],
         *,
         should_search: bool,
+        alias_map: dict[str, str] | None = None,
     ) -> AsyncGenerator[dict[str, Any], None]:
         """Stream the response into Home Assistant chat log deltas."""
         partial_tool_calls: dict[int, dict[str, str]] = {}
-        reasoning_seen = False
-        content_parts: list[str] = []
+        reasoning_pending: list[str] = []
+        content_pending: list[str] = []
+
+        if self.show_debug_bubbles:
+            yield {"thinking_content": "Thinking...\n"}
 
         async for chunk in self.client.async_generate_stream({**payload, "stream": True}):
             choices = chunk.get("choices") or []
@@ -498,9 +587,11 @@ class OpenWebUIAgent(
                 delta, "reasoning", "reasoning_content", "thinking_content"
             )
             if reasoning_delta:
-                reasoning_seen = True
+                reasoning_pending.append(reasoning_delta)
                 if self.show_debug_bubbles:
-                    yield {"thinking_content": reasoning_delta}
+                    flushed = _flush_stream_buffer(reasoning_pending)
+                    if flushed:
+                        yield {"thinking_content": flushed}
 
             delta_tool_calls = delta.get("tool_calls")
             if isinstance(delta_tool_calls, list):
@@ -508,10 +599,13 @@ class OpenWebUIAgent(
 
             content_delta = _flatten_text_content(delta.get("content"))
             if content_delta:
-                content_parts.append(content_delta)
+                content_pending.append(content_delta)
 
         tool_calls = _normalize_stream_tool_calls(partial_tool_calls)
-        final_content = "".join(content_parts).strip()
+        final_content = (_flush_stream_buffer(content_pending, force=True) or "").strip()
+        trailing_reasoning = _flush_stream_buffer(reasoning_pending, force=True)
+        if self.show_debug_bubbles and trailing_reasoning:
+            yield {"thinking_content": trailing_reasoning}
 
         if not tool_calls and final_content:
             prompt_plan = extract_tool_calls(
@@ -522,14 +616,16 @@ class OpenWebUIAgent(
                 final_content = ""
 
         if tool_calls:
-            if self.show_debug_bubbles and reasoning_seen:
+            if self.show_debug_bubbles:
                 yield {"role": "assistant"}
             if self.show_debug_bubbles:
                 tool_inputs = _tool_inputs_from_tool_calls(tool_calls)
                 if tool_inputs:
                     yield {"role": "assistant", "tool_calls": tool_inputs}
 
-            execution_results = await execute_tool_calls_detailed(self.hass, tool_calls)
+            execution_results = await execute_tool_calls_detailed(
+                self.hass, tool_calls, alias_map
+            )
             if self.show_debug_bubbles:
                 for execution_result in execution_results:
                     yield {

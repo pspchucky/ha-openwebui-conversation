@@ -190,9 +190,55 @@ def _entity_index(hass: HomeAssistant) -> dict[str, list[dict[str, Any]]]:
     return index
 
 
-def _resolve_entities(
-    hass: HomeAssistant, names: list[str], expected_domain: str | None = None
+def _resolve_via_alias_map(
+    hass: HomeAssistant,
+    names: list[str],
+    alias_map: dict[str, str] | None,
+    expected_domain: str | None = None,
 ) -> tuple[list[str], list[str]]:
+    """Resolve names directly from a prompt-derived alias map."""
+    if not alias_map:
+        return [], []
+
+    state_ids = {state.entity_id for state in hass.states.async_all()}
+    resolved_ids: list[str] = []
+    resolved_names: list[str] = []
+
+    for raw_name in names:
+        raw_text = raw_name.strip()
+        if not raw_text:
+            continue
+        entity_id = (
+            alias_map.get(raw_text)
+            or alias_map.get(raw_text.casefold())
+            or alias_map.get(_lookup_key(raw_text))
+        )
+        if not entity_id:
+            continue
+        if expected_domain and not entity_id.startswith(f"{expected_domain}."):
+            continue
+        if entity_id not in state_ids:
+            LOGGER.debug("Alias map resolved %r to missing entity %r", raw_name, entity_id)
+            continue
+        if entity_id not in resolved_ids:
+            resolved_ids.append(entity_id)
+            resolved_names.append(raw_text)
+
+    return resolved_ids, resolved_names
+
+
+def _resolve_entities(
+    hass: HomeAssistant,
+    names: list[str],
+    expected_domain: str | None = None,
+    alias_map: dict[str, str] | None = None,
+) -> tuple[list[str], list[str]]:
+    alias_ids, alias_names = _resolve_via_alias_map(
+        hass, names, alias_map, expected_domain
+    )
+    if alias_ids:
+        return alias_ids, alias_names
+
     index = _entity_index(hass)
     resolved_ids: list[str] = []
     resolved_names: list[str] = []
@@ -241,16 +287,17 @@ def _resolve_entity_targets(
     hass: HomeAssistant,
     parameters: dict[str, Any],
     expected_domain: str | None = None,
+    alias_map: dict[str, str] | None = None,
 ) -> tuple[list[str], list[str]]:
     entity_candidates = _entity_ids_from_parameters(parameters)
     if entity_candidates:
-        return _resolve_entities(hass, entity_candidates, expected_domain)
+        return _resolve_entities(hass, entity_candidates, expected_domain, alias_map)
     names = _normalize_name_list(parameters.get("names"))
     if not names:
         names = _normalize_name_list(parameters.get("name"))
     if not names:
         names = _normalize_name_list(parameters.get("names_csv"))
-    return _resolve_entities(hass, names, expected_domain)
+    return _resolve_entities(hass, names, expected_domain, alias_map)
 
 
 async def _call_service(
@@ -260,9 +307,13 @@ async def _call_service(
 
 
 async def _execute_control_lights(
-    hass: HomeAssistant, parameters: dict[str, Any]
+    hass: HomeAssistant,
+    parameters: dict[str, Any],
+    alias_map: dict[str, str] | None = None,
 ) -> ExecutedStep | None:
-    entity_ids, resolved_names = _resolve_entity_targets(hass, parameters, "light")
+    entity_ids, resolved_names = _resolve_entity_targets(
+        hass, parameters, "light", alias_map
+    )
     if not entity_ids:
         LOGGER.debug("control_lights could not resolve targets: %s", parameters)
         return None
@@ -297,9 +348,13 @@ async def _execute_control_lights(
 
 
 async def _execute_control_switches(
-    hass: HomeAssistant, parameters: dict[str, Any]
+    hass: HomeAssistant,
+    parameters: dict[str, Any],
+    alias_map: dict[str, str] | None = None,
 ) -> ExecutedStep | None:
-    entity_ids, resolved_names = _resolve_entity_targets(hass, parameters, "switch")
+    entity_ids, resolved_names = _resolve_entity_targets(
+        hass, parameters, "switch", alias_map
+    )
     if not entity_ids:
         LOGGER.debug("control_switches could not resolve targets: %s", parameters)
         return None
@@ -314,10 +369,12 @@ async def _execute_control_switches(
 
 
 async def _execute_media_player_command(
-    hass: HomeAssistant, parameters: dict[str, Any]
+    hass: HomeAssistant,
+    parameters: dict[str, Any],
+    alias_map: dict[str, str] | None = None,
 ) -> ExecutedStep | None:
     entity_ids, resolved_names = _resolve_entity_targets(
-        hass, parameters, "media_player"
+        hass, parameters, "media_player", alias_map
     )
     if not entity_ids:
         LOGGER.debug("media_player_command could not resolve targets: %s", parameters)
@@ -351,9 +408,13 @@ async def _execute_media_player_command(
 
 
 async def _execute_climate_set_temperature(
-    hass: HomeAssistant, parameters: dict[str, Any]
+    hass: HomeAssistant,
+    parameters: dict[str, Any],
+    alias_map: dict[str, str] | None = None,
 ) -> ExecutedStep | None:
-    entity_ids, resolved_names = _resolve_entity_targets(hass, parameters, "climate")
+    entity_ids, resolved_names = _resolve_entity_targets(
+        hass, parameters, "climate", alias_map
+    )
     if not entity_ids:
         LOGGER.debug(
             "climate_set_temperature could not resolve targets: %s", parameters
@@ -395,9 +456,11 @@ async def _execute_wait(parameters: dict[str, Any]) -> ExecutedStep | None:
 
 
 async def _execute_control_device(
-    hass: HomeAssistant, parameters: dict[str, Any]
+    hass: HomeAssistant,
+    parameters: dict[str, Any],
+    alias_map: dict[str, str] | None = None,
 ) -> ExecutedStep | None:
-    entity_ids, resolved_names = _resolve_entity_targets(hass, parameters)
+    entity_ids, resolved_names = _resolve_entity_targets(hass, parameters, alias_map=alias_map)
     if not entity_ids:
         LOGGER.debug("controlDevice could not resolve targets: %s", parameters)
         return None
@@ -411,14 +474,18 @@ async def _execute_control_device(
 
 
 async def _execute_call_service_raw(
-    hass: HomeAssistant, parameters: dict[str, Any]
+    hass: HomeAssistant,
+    parameters: dict[str, Any],
+    alias_map: dict[str, str] | None = None,
 ) -> ExecutedStep | None:
     domain = str(parameters.get("domain", "")).strip()
     service = str(parameters.get("service", "")).strip()
     if not domain or not service:
         LOGGER.debug("call_service_raw missing domain/service: %s", parameters)
         return None
-    entity_ids, resolved_names = _resolve_entity_targets(hass, parameters)
+    entity_ids, resolved_names = _resolve_entity_targets(
+        hass, parameters, alias_map=alias_map
+    )
     if not entity_ids:
         LOGGER.debug("call_service_raw could not resolve targets: %s", parameters)
         return None
@@ -450,7 +517,9 @@ def _tool_result_from_step(step: ExecutedStep) -> dict[str, Any]:
 
 
 async def execute_tool_calls_detailed(
-    hass: HomeAssistant, tool_calls: list[dict[str, Any]]
+    hass: HomeAssistant,
+    tool_calls: list[dict[str, Any]],
+    alias_map: dict[str, str] | None = None,
 ) -> list[ToolExecutionResult]:
     """Execute supported tool calls in order with structured results."""
     results: list[ToolExecutionResult] = []
@@ -462,19 +531,19 @@ async def execute_tool_calls_detailed(
             parameters = {}
         step: ExecutedStep | None = None
         if name == "control_lights":
-            step = await _execute_control_lights(hass, parameters)
+            step = await _execute_control_lights(hass, parameters, alias_map)
         elif name == "control_switches":
-            step = await _execute_control_switches(hass, parameters)
+            step = await _execute_control_switches(hass, parameters, alias_map)
         elif name == "media_player_command":
-            step = await _execute_media_player_command(hass, parameters)
+            step = await _execute_media_player_command(hass, parameters, alias_map)
         elif name == "climate_set_temperature":
-            step = await _execute_climate_set_temperature(hass, parameters)
+            step = await _execute_climate_set_temperature(hass, parameters, alias_map)
         elif name == "wait":
             step = await _execute_wait(parameters)
         elif name == "controlDevice":
-            step = await _execute_control_device(hass, parameters)
+            step = await _execute_control_device(hass, parameters, alias_map)
         elif name == "call_service_raw":
-            step = await _execute_call_service_raw(hass, parameters)
+            step = await _execute_call_service_raw(hass, parameters, alias_map)
         else:
             LOGGER.debug("Ignoring unsupported local tool call: %s", name)
         if step is None:
@@ -499,10 +568,12 @@ async def execute_tool_calls_detailed(
 
 
 async def execute_tool_calls(
-    hass: HomeAssistant, tool_calls: list[dict[str, Any]]
+    hass: HomeAssistant,
+    tool_calls: list[dict[str, Any]],
+    alias_map: dict[str, str] | None = None,
 ) -> list[ExecutedStep]:
     """Execute supported tool calls in order."""
-    results = await execute_tool_calls_detailed(hass, tool_calls)
+    results = await execute_tool_calls_detailed(hass, tool_calls, alias_map)
     return [result.step for result in results if result.step is not None]
 
 

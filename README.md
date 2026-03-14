@@ -43,6 +43,12 @@ This fork now includes a ready-to-copy example set for the NaBu + MLX + Home Ass
 
 These are meant to be practical examples you can adapt directly instead of rebuilding the setup from scratch.
 
+When your system prompt includes a `Home Layout` section like:
+
+* `Middle bedroom -> light.michaels_old_room`
+
+the fork will now parse those aliases and use them during local tool execution. That means model-emitted names such as `Middle bedroom` can still resolve correctly even when Home Assistant's exposed entity name is different.
+
 ## Recommended Native Tool Setup
 
 For the most reliable multi-step native tool execution in this fork:
