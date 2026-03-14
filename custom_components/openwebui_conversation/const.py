@@ -23,6 +23,7 @@ CONF_SEARCH_RESULT_PREFIX = "search_result_prefix"
 CONF_STRIP_MARKDOWN = "strip_markdown"
 CONF_VERIFY_SSL = "verify_ssl"
 CONF_ENABLE_STREAMING = "enable_streaming"
+CONF_NARRATE_STREAMING_PROGRESS = "narrate_streaming_progress"
 CONF_SHOW_DEBUG_BUBBLES = "show_debug_bubbles"
 
 DEFAULT_SERVICE_NAME = "OpenWebUI"
@@ -37,4 +38,5 @@ DEFAULT_SEARCH_RESULT_PREFIX = "Based on a search of the internet: "
 DEFAULT_STRIP_MARKDOWN = False
 DEFAULT_VERIFY_SSL = True
 DEFAULT_ENABLE_STREAMING = True
+DEFAULT_NARRATE_STREAMING_PROGRESS = False
 DEFAULT_SHOW_DEBUG_BUBBLES = True

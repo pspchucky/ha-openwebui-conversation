@@ -37,7 +37,8 @@
                     "lang_code": "Language Code",
                     "verify_ssl": "Verify SSL",
                     "enable_streaming": "Enable Streaming",
-                    "show_debug_bubbles": "Show Thinking and Tool Bubbles"
+                    "narrate_streaming_progress": "Narrate Streaming Progress",
+                    "show_debug_bubbles": "Show Structured Tool Details"
                 }
             },
             "model_config": {
