@@ -60,7 +60,7 @@ from .local_executor import (
     describe_tool_execution_result,
     execute_tool_calls_detailed,
     extract_tool_calls,
-    summarize_executed_steps,
+    summarize_execution_results,
 )
 
 TOOL_ID_CACHE: dict[str, list[str]] = {}
@@ -267,33 +267,11 @@ def _alias_keys(name: str) -> set[str]:
     }
 
 
-def _extract_prompt_alias_map(messages: list[dict[str, Any]]) -> dict[str, str]:
-    """Extract Home Layout aliases from system prompts."""
-    alias_map: dict[str, str] = {}
-    for message in messages:
-        if message.get("role") != "system":
-            continue
-        content = message.get("content")
-        if not isinstance(content, str):
-            continue
-        for line in content.splitlines():
-            matched = _HOME_LAYOUT_LINE.match(line)
-            if not matched:
-                continue
-            name = _clean_layout_name(matched.group("name"))
-            entity_id = matched.group("entity_id").strip()
-            if not name or not entity_id:
-                continue
-            for key in _alias_keys(name):
-                if key:
-                    alias_map[key] = entity_id
-    return alias_map
-
-
 def _flush_stream_buffer(
     pending: list[str],
     *,
     force: bool = False,
+    sentence_safe: bool = False,
 ) -> str:
     """Emit larger readable chunks instead of token fragments."""
     if not pending:
@@ -303,6 +281,14 @@ def _flush_stream_buffer(
         pending.clear()
         return ""
     if not force:
+        if sentence_safe:
+            split_match = re.search(r"^(.+?[.!?](?:\s+|$))(.*)$", text, re.DOTALL)
+            if split_match:
+                emit = split_match.group(1)
+                remainder = split_match.group(2)
+                pending[:] = [remainder] if remainder else []
+                return emit if emit.strip() else ""
+            return ""
         if len(text) < 24 and not re.search(r"[\s.,!?;:\n]$", text):
             return ""
         split_match = re.search(r"^(.+[\s.,!?;:\n])(.*)$", text, re.DOTALL)
@@ -340,6 +326,19 @@ def _narrated_lead_in(estimated_seconds: int | None) -> str:
     if estimated_seconds is None:
         return "Hmm, let me think."
     return f"Hmm, let me think for about {estimated_seconds} seconds."
+
+
+def _is_tool_capable(payload: dict[str, Any]) -> bool:
+    if payload.get("tool_ids"):
+        return True
+    for message in payload.get("messages", []):
+        if (
+            isinstance(message, dict)
+            and message.get("role") == "system"
+            and LOCAL_TOOL_SYSTEM_PROMPT in str(message.get("content", ""))
+        ):
+            return True
+    return False
 
 
 class OpenWebUIAgent(
@@ -432,7 +431,6 @@ class OpenWebUIAgent(
                 prompt,
                 include_local_tool_prompt=not tool_ids,
             )
-            alias_map = _extract_prompt_alias_map(message_list)
             payload = {
                 "features": {"web_search": should_search},
                 "tool_ids": tool_ids,
@@ -443,22 +441,31 @@ class OpenWebUIAgent(
             }
 
             if self.enable_streaming:
+                stream_state: dict[str, Any] = {}
                 async for _content in chat_log.async_add_delta_content_stream(
                     self.entity_id,
                     self._async_stream_chat(
                         payload,
                         should_search=should_search,
-                        alias_map=alias_map,
+                        alias_map=None,
+                        stream_state=stream_state,
                     ),
                 ):
                     pass
+                if stream_state.get("tool_flow") and stream_state.get("final_text"):
+                    chat_log.async_add_assistant_content_without_tools(
+                        conversation.AssistantContent(
+                            agent_id=self.entity_id,
+                            content=stream_state["final_text"],
+                        )
+                    )
             else:
                 response = await self.client.async_generate({**payload, "stream": False})
                 await self._async_add_nonstream_response(
                     chat_log,
                     response,
                     should_search=should_search,
-                    alias_map=alias_map,
+                    alias_map=None,
                 )
                 self._record_latency_estimate(model, time.monotonic() - started)
         except (ApiCommError, ApiJsonError, ApiTimeoutError) as err:
@@ -538,9 +545,8 @@ class OpenWebUIAgent(
             execution_results = await execute_tool_calls_detailed(
                 self.hass, tool_calls, alias_map
             )
-            steps = [result.step for result in execution_results if result.step is not None]
             response_text = (
-                summarize_executed_steps(steps)
+                summarize_execution_results(execution_results)
                 or response_text
                 or "I found a tool call, but couldn't execute it successfully."
             )
@@ -616,6 +622,7 @@ class OpenWebUIAgent(
         *,
         should_search: bool,
         alias_map: dict[str, str] | None = None,
+        stream_state: dict[str, Any] | None = None,
     ) -> AsyncGenerator[dict[str, Any], None]:
         """Stream the response into Home Assistant chat log deltas."""
         model = str(
@@ -623,14 +630,11 @@ class OpenWebUIAgent(
         )
         partial_tool_calls: dict[int, dict[str, str]] = {}
         content_pending: list[str] = []
+        buffered_content: list[str] = []
+        full_content_parts: list[str] = []
         narrate_progress = self.narrate_streaming_progress
+        tool_capable = _is_tool_capable(payload)
         started = time.monotonic()
-
-        if narrate_progress:
-            estimated_seconds = _estimate_latency_seconds(
-                self._model_latency_estimates, self._model_latency_samples, model
-            )
-            yield _narrated_progress_delta(_narrated_lead_in(estimated_seconds))
 
         try:
             async for chunk in self.client.async_generate_stream(
@@ -648,26 +652,43 @@ class OpenWebUIAgent(
 
                 content_delta = _flatten_stream_content(delta.get("content"))
                 if content_delta:
-                    content_pending.append(content_delta)
-                    if not partial_tool_calls:
-                        flushed = _flush_stream_buffer(content_pending)
+                    full_content_parts.append(content_delta)
+                    target_buffer = buffered_content if (narrate_progress and tool_capable) else content_pending
+                    target_buffer.append(content_delta)
+                    if not partial_tool_calls and target_buffer is content_pending:
+                        flushed = _flush_stream_buffer(
+                            content_pending, sentence_safe=True
+                        )
                         if flushed:
                             yield {"role": "assistant", "content": flushed}
         finally:
             self._record_latency_estimate(model, time.monotonic() - started)
 
         tool_calls = _normalize_stream_tool_calls(partial_tool_calls)
-        final_content = (_flush_stream_buffer(content_pending, force=True) or "").strip()
+        full_content = "".join(full_content_parts).strip()
 
-        if not tool_calls and final_content:
+        if buffered_content:
+            content_pending.extend(buffered_content)
+            buffered_content.clear()
+        final_content = (
+            _flush_stream_buffer(content_pending, force=True, sentence_safe=True) or ""
+        ).strip()
+
+        if not tool_calls and full_content:
             prompt_plan = extract_tool_calls(
-                {"choices": [{"message": {"content": final_content}}]}
+                {"choices": [{"message": {"content": full_content}}]}
             )
             if prompt_plan:
                 tool_calls = prompt_plan
                 final_content = ""
 
         if tool_calls:
+            estimated_seconds = _estimate_latency_seconds(
+                self._model_latency_estimates, self._model_latency_samples, model
+            )
+            if narrate_progress:
+                yield _narrated_progress_delta(_narrated_lead_in(estimated_seconds))
+
             if self.show_debug_bubbles:
                 tool_inputs = _tool_inputs_from_tool_calls(tool_calls)
                 if tool_inputs:
@@ -703,17 +724,13 @@ class OpenWebUIAgent(
                     if executed_line:
                         yield _narrated_progress_delta(executed_line)
 
-            steps = [result.step for result in execution_results if result.step is not None]
-            final_text = summarize_executed_steps(steps)
+            final_text = summarize_execution_results(execution_results)
             if not final_text:
-                final_text = (
-                    final_content
-                    or "I found a tool call, but couldn't execute it successfully."
-                )
-            elif narrate_progress:
+                final_text = "I found a tool call, but couldn't execute it successfully."
+            if narrate_progress:
                 yield _narrated_progress_delta("Wrapping up.")
         else:
-            final_text = final_content or "I didn't get a usable response from the model."
+            final_text = full_content or final_content or "I didn't get a usable response from the model."
 
         final_text = _format_final_text(
             final_text,
@@ -721,7 +738,11 @@ class OpenWebUIAgent(
             markdown_parser=self.markdown_parser,
             search_prefix=self.search_result_prefix if should_search else None,
         )
-        yield {"role": "assistant", "content": final_text}
+        if stream_state is not None:
+            stream_state["final_text"] = final_text
+            stream_state["tool_flow"] = bool(tool_calls)
+        if not tool_calls:
+            yield {"role": "assistant", "content": final_text}
 
     async def _async_entry_update_listener(
         self, hass: HomeAssistant, entry: ConfigEntry

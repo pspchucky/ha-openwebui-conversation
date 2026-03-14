@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from difflib import get_close_matches
 import json
 import re
 from dataclasses import dataclass
@@ -34,6 +35,16 @@ class ToolExecutionResult:
     parameters: dict[str, Any]
     step: ExecutedStep | None
     tool_result: dict[str, Any]
+
+
+@dataclass
+class ResolutionFailure:
+    """Structured target-resolution failure details."""
+
+    requested_names: list[str]
+    matched_names: list[str]
+    suggestions: list[str]
+    message: str
 
 
 def _normalize_tool_name(name: str | None) -> str:
@@ -68,9 +79,26 @@ def _normalize_name_list(value: Any) -> list[str]:
 def _lookup_key(value: str) -> str:
     text = value.strip().lower()
     text = re.sub(r"^[Tt]he\s+", "", text)
+    text = re.sub(r"[^\w\s\.]", " ", text)
     text = text.replace("_", " ").replace("-", " ")
     text = re.sub(r"\s+", " ", text)
     return text
+
+
+def _lookup_variants(value: str) -> set[str]:
+    base = _lookup_key(value)
+    if not base:
+        return set()
+    variants = {base}
+    suffixes = (" light", " lights", " switch", " switches")
+    for suffix in suffixes:
+        if base.endswith(suffix):
+            trimmed = base[: -len(suffix)].strip()
+            if trimmed:
+                variants.add(trimmed)
+        else:
+            variants.add(f"{base}{suffix}")
+    return variants
 
 
 def _parse_json_from_text(content: str | None) -> dict[str, Any] | None:
@@ -177,55 +205,17 @@ def _entity_index(hass: HomeAssistant) -> dict[str, list[dict[str, Any]]]:
             _lookup_key(entity_slug),
             _lookup_key(entity_name),
         }
+        for value in (entity_id, entity_slug, entity_name):
+            keys.update(_lookup_variants(value))
         for alias in entity.get("aliases", []):
             if alias:
                 alias_text = str(alias)
                 keys.add(alias_text.lower())
                 keys.add(_lookup_key(alias_text))
-        if entity_name:
-            for suffix in (" light", " lights", " switch", " switches"):
-                keys.add(f"{entity_name.lower()}{suffix}")
-                keys.add(f"{_lookup_key(entity_name)}{suffix}")
+                keys.update(_lookup_variants(alias_text))
         for key in keys:
             index.setdefault(key, []).append(entity)
     return index
-
-
-def _resolve_via_alias_map(
-    hass: HomeAssistant,
-    names: list[str],
-    alias_map: dict[str, str] | None,
-    expected_domain: str | None = None,
-) -> tuple[list[str], list[str]]:
-    """Resolve names directly from a prompt-derived alias map."""
-    if not alias_map:
-        return [], []
-
-    state_ids = {state.entity_id for state in hass.states.async_all()}
-    resolved_ids: list[str] = []
-    resolved_names: list[str] = []
-
-    for raw_name in names:
-        raw_text = raw_name.strip()
-        if not raw_text:
-            continue
-        entity_id = (
-            alias_map.get(raw_text)
-            or alias_map.get(raw_text.casefold())
-            or alias_map.get(_lookup_key(raw_text))
-        )
-        if not entity_id:
-            continue
-        if expected_domain and not entity_id.startswith(f"{expected_domain}."):
-            continue
-        if entity_id not in state_ids:
-            LOGGER.debug("Alias map resolved %r to missing entity %r", raw_name, entity_id)
-            continue
-        if entity_id not in resolved_ids:
-            resolved_ids.append(entity_id)
-            resolved_names.append(raw_text)
-
-    return resolved_ids, resolved_names
 
 
 def _resolve_entities(
@@ -234,20 +224,19 @@ def _resolve_entities(
     expected_domain: str | None = None,
     alias_map: dict[str, str] | None = None,
 ) -> tuple[list[str], list[str]]:
-    alias_ids, alias_names = _resolve_via_alias_map(
-        hass, names, alias_map, expected_domain
-    )
-    if alias_ids:
-        return alias_ids, alias_names
-
     index = _entity_index(hass)
     resolved_ids: list[str] = []
     resolved_names: list[str] = []
     for raw_name in names:
         raw_text = raw_name.strip()
-        direct_matches = index.get(raw_text.lower(), [])
-        normalized_matches = index.get(_lookup_key(raw_text), [])
-        candidates = direct_matches or normalized_matches
+        candidates: list[dict[str, Any]] = []
+        seen_entity_ids: set[str] = set()
+        for lookup_value in _lookup_variants(raw_text) | {raw_text.lower()}:
+            for entity in index.get(lookup_value, []):
+                if entity["entity_id"] in seen_entity_ids:
+                    continue
+                seen_entity_ids.add(entity["entity_id"])
+                candidates.append(entity)
         if expected_domain:
             candidates = [
                 entity
@@ -265,6 +254,90 @@ def _resolve_entities(
             resolved_ids.append(entity_id)
             resolved_names.append(entity["name"])
     return resolved_ids, resolved_names
+
+
+def _requested_target_names(parameters: dict[str, Any]) -> list[str]:
+    entity_candidates = _entity_ids_from_parameters(parameters)
+    if entity_candidates:
+        return entity_candidates
+    names = _normalize_name_list(parameters.get("names"))
+    if not names:
+        names = _normalize_name_list(parameters.get("name"))
+    if not names:
+        names = _normalize_name_list(parameters.get("names_csv"))
+    return names
+
+
+def _target_domain_for_tool(tool_name: str) -> str | None:
+    name = _normalize_tool_name(tool_name)
+    if name == "control_lights":
+        return "light"
+    if name == "control_switches":
+        return "switch"
+    if name == "media_player_command":
+        return "media_player"
+    if name == "climate_set_temperature":
+        return "climate"
+    return None
+
+
+def _suggest_targets(
+    hass: HomeAssistant,
+    requested_names: list[str],
+    expected_domain: str | None = None,
+) -> list[str]:
+    entities = get_exposed_entities(hass)
+    candidates: list[str] = []
+    normalized_to_display: dict[str, str] = {}
+    for entity in entities:
+        if expected_domain and not entity["entity_id"].startswith(f"{expected_domain}."):
+            continue
+        display_values = [entity["name"], entity["entity_id"], *entity.get("aliases", [])]
+        for display_value in display_values:
+            if not display_value:
+                continue
+            display_text = str(display_value).strip()
+            normalized = _lookup_key(display_text)
+            if not normalized:
+                continue
+            normalized_to_display.setdefault(normalized, display_text)
+            candidates.append(normalized)
+
+    suggestions: list[str] = []
+    for requested_name in requested_names:
+        requested_key = _lookup_key(requested_name)
+        if not requested_key:
+            continue
+        for match in get_close_matches(requested_key, candidates, n=3, cutoff=0.6):
+            display_value = normalized_to_display.get(match)
+            if display_value and display_value not in suggestions:
+                suggestions.append(display_value)
+    return suggestions[:3]
+
+
+def _build_resolution_failure(
+    hass: HomeAssistant,
+    tool_name: str,
+    parameters: dict[str, Any],
+) -> ResolutionFailure:
+    requested_names = _requested_target_names(parameters)
+    suggestions = _suggest_targets(
+        hass, requested_names, _target_domain_for_tool(tool_name)
+    )
+    if requested_names:
+        joined_requested = ", ".join(requested_names)
+        message = (
+            f"'{joined_requested}' is not available in your exposed Home Assistant "
+            "names or aliases."
+        )
+    else:
+        message = "The requested target is not available in your exposed Home Assistant names or aliases."
+    return ResolutionFailure(
+        requested_names=requested_names,
+        matched_names=[],
+        suggestions=suggestions,
+        message=message,
+    )
 
 
 def _entity_ids_from_parameters(parameters: dict[str, Any]) -> list[str]:
@@ -590,6 +663,13 @@ def describe_tool_call(tool_name: str, parameters: dict[str, Any]) -> str | None
 def describe_tool_execution_result(result: ToolExecutionResult) -> str | None:
     """Return a short narrated progress line for an executed tool step."""
     if result.step is None:
+        requested_names = result.tool_result.get("requested_names") or []
+        if requested_names:
+            joined_names = _display_targets([str(name) for name in requested_names])
+            return (
+                f"I couldn't find {joined_names} in your exposed Home Assistant names "
+                "or aliases."
+            )
         if result.tool_name == "wait":
             return "I couldn't wait as requested."
         return "I couldn't complete that step."
@@ -643,11 +723,30 @@ async def execute_tool_calls_detailed(
             LOGGER.debug("Ignoring unsupported local tool call: %s", name)
         if step is None:
             LOGGER.debug("Tool call produced no executed step: %s", tool_call)
-            tool_result = {
-                "success": False,
-                "error": "unsupported_or_unresolved_tool_call",
-                "tool_name": name or "unknown",
-            }
+            if name in {
+                "control_lights",
+                "control_switches",
+                "media_player_command",
+                "climate_set_temperature",
+                "controlDevice",
+                "call_service_raw",
+            }:
+                failure = _build_resolution_failure(hass, name, parameters)
+                tool_result = {
+                    "success": False,
+                    "error": "unresolved_target",
+                    "tool_name": name or "unknown",
+                    "requested_names": failure.requested_names,
+                    "matched_names": failure.matched_names,
+                    "suggestions": failure.suggestions,
+                    "message": failure.message,
+                }
+            else:
+                tool_result = {
+                    "success": False,
+                    "error": "unsupported_or_unresolved_tool_call",
+                    "tool_name": name or "unknown",
+                }
         else:
             tool_result = _tool_result_from_step(step)
         results.append(
@@ -712,3 +811,44 @@ def summarize_executed_steps(steps: list[ExecutedStep]) -> str | None:
     if len(parts) == 2:
         return f"Done. {parts[0].capitalize()}, then {parts[1]}."
     return f"Done. {parts[0].capitalize()}, " + ", ".join(parts[1:-1]) + f", then {parts[-1]}."
+
+
+def summarize_execution_results(results: list[ToolExecutionResult]) -> str | None:
+    """Return a short spoken summary for mixed success/failure runs."""
+    if not results:
+        return None
+
+    failures = [result for result in results if result.step is None]
+    steps = [result.step for result in results if result.step is not None]
+    success_summary = summarize_executed_steps(steps)
+
+    if not failures:
+        return success_summary
+
+    failure_messages: list[str] = []
+    seen_failures: set[tuple[str, ...]] = set()
+    for failure in failures:
+        requested_names = tuple(
+            str(name) for name in (failure.tool_result.get("requested_names") or [])
+        )
+        if requested_names in seen_failures:
+            continue
+        seen_failures.add(requested_names)
+        if requested_names:
+            joined_names = _display_targets(list(requested_names))
+            message = (
+                f"I couldn't find {joined_names} in your exposed Home Assistant names "
+                "or aliases."
+            )
+            suggestions = failure.tool_result.get("suggestions") or []
+            if suggestions:
+                message += f" Try {_display_targets([str(s) for s in suggestions])}."
+            failure_messages.append(message)
+        else:
+            failure_messages.append("I couldn't complete every requested step.")
+
+    if not success_summary:
+        return " ".join(failure_messages)
+
+    trimmed_success = success_summary.removeprefix("Done. ").strip()
+    return " ".join(failure_messages + [trimmed_success])

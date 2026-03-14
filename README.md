@@ -17,6 +17,7 @@ It also aligns more closely with the current upstream Assist clients:
 * web can consume native structured tool progress through `tool_calls` and `tool_result`
 * iOS can consume readable narrated progress through streamed assistant `content`
 * raw model chain-of-thought is not forwarded to users
+* tool runs use deterministic narrated progress instead of speaking raw model prose
 
 Supported local tools:
 
@@ -53,7 +54,7 @@ When your system prompt includes a `Home Layout` section like:
 
 * `Middle bedroom -> light.michaels_old_room`
 
-the fork will now parse those aliases and use them during local tool execution. That means model-emitted names such as `Middle bedroom` can still resolve correctly even when Home Assistant's exposed entity name is different.
+the model may use those names in tool arguments, but local execution still only trusts Home Assistant exposed names and exposed aliases. If you want `Middle bedroom` to execute locally, it must also exist as an exposed Home Assistant name or alias.
 
 ## Recommended Native Tool Setup
 
@@ -171,9 +172,10 @@ When **Enable Streaming** is on:
 
 When **Narrate Streaming Progress** is also on:
 
-1. the integration emits semantic progress like `Hmm, let me think`, tool actions, waits, and `Wrapping up`
+1. the integration emits deterministic semantic progress like `Hmm, let me think`, tool actions, waits, and `Wrapping up`
 2. those updates use the same assistant-content channel that current upstream iOS consumes
 3. if the active TTS path supports streaming assistant content, those updates may also be spoken mid-run
+4. tool runs do not speak the model's raw streamed prose; the final short reply comes from `intent-end`
 
 When **Show Structured Tool Details** is on:
 
