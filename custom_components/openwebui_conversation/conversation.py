@@ -386,6 +386,7 @@ class OpenWebUIAgent(
     ) -> conversation.ConversationResult:
         """Process a sentence."""
         prompt, should_search = self._prepare_prompt(user_input.text)
+        model = self.entry.options.get(CONF_MODEL, DEFAULT_MODEL)
         try:
             tool_ids = await self._async_get_tool_ids()
             message_list = _messages_from_chat_log(
