@@ -258,6 +258,29 @@ def _alias_keys(name: str) -> set[str]:
     }
 
 
+def _extract_prompt_alias_map(messages: list[dict[str, Any]]) -> dict[str, str]:
+    """Extract Home Layout aliases from system prompts."""
+    alias_map: dict[str, str] = {}
+    for message in messages:
+        if message.get("role") != "system":
+            continue
+        content = message.get("content")
+        if not isinstance(content, str):
+            continue
+        for line in content.splitlines():
+            matched = _HOME_LAYOUT_LINE.match(line)
+            if not matched:
+                continue
+            name = _clean_layout_name(matched.group("name"))
+            entity_id = matched.group("entity_id").strip()
+            if not name or not entity_id:
+                continue
+            for key in _alias_keys(name):
+                if key:
+                    alias_map[key] = entity_id
+    return alias_map
+
+
 def _flush_stream_buffer(
     pending: list[str],
     *,
@@ -394,6 +417,7 @@ class OpenWebUIAgent(
                 prompt,
                 include_local_tool_prompt=not tool_ids,
             )
+            alias_map = _extract_prompt_alias_map(message_list)
             payload = {
                 "features": {"web_search": should_search},
                 "tool_ids": tool_ids,
@@ -410,7 +434,7 @@ class OpenWebUIAgent(
                     self._async_stream_chat(
                         payload,
                         should_search=should_search,
-                        alias_map=None,
+                        alias_map=alias_map,
                         stream_state=stream_state,
                     ),
                 ):
@@ -428,7 +452,7 @@ class OpenWebUIAgent(
                     chat_log,
                     response,
                     should_search=should_search,
-                    alias_map=None,
+                    alias_map=alias_map,
                 )
         except (ApiCommError, ApiJsonError, ApiTimeoutError) as err:
             LOGGER.error("Error generating prompt: %s", err)

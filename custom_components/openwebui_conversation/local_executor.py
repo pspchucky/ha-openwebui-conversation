@@ -218,12 +218,54 @@ def _entity_index(hass: HomeAssistant) -> dict[str, list[dict[str, Any]]]:
     return index
 
 
+def _resolve_via_alias_map(
+    hass: HomeAssistant,
+    names: list[str],
+    alias_map: dict[str, str] | None,
+    expected_domain: str | None = None,
+) -> tuple[list[str], list[str]]:
+    if not alias_map:
+        return [], []
+
+    state_ids = {state.entity_id for state in hass.states.async_all()}
+    resolved_ids: list[str] = []
+    resolved_names: list[str] = []
+
+    for raw_name in names:
+        raw_text = raw_name.strip()
+        if not raw_text:
+            continue
+        entity_id = (
+            alias_map.get(raw_text)
+            or alias_map.get(raw_text.casefold())
+            or alias_map.get(_lookup_key(raw_text))
+        )
+        if not entity_id:
+            continue
+        if expected_domain and not entity_id.startswith(f"{expected_domain}."):
+            continue
+        if entity_id not in state_ids:
+            LOGGER.debug("Alias map resolved %r to missing entity %r", raw_name, entity_id)
+            continue
+        if entity_id not in resolved_ids:
+            resolved_ids.append(entity_id)
+            resolved_names.append(raw_text)
+
+    return resolved_ids, resolved_names
+
+
 def _resolve_entities(
     hass: HomeAssistant,
     names: list[str],
     expected_domain: str | None = None,
     alias_map: dict[str, str] | None = None,
 ) -> tuple[list[str], list[str]]:
+    alias_ids, alias_names = _resolve_via_alias_map(
+        hass, names, alias_map, expected_domain
+    )
+    if alias_ids:
+        return alias_ids, alias_names
+
     index = _entity_index(hass)
     resolved_ids: list[str] = []
     resolved_names: list[str] = []
