@@ -15,6 +15,8 @@ from homeassistant.helpers import entity_registry
 from .const import LOGGER
 from .helpers import get_exposed_entities
 
+LIGHT_STATE_SETTLE_SECONDS = 1.2
+
 
 @dataclass
 class ExecutedStep:
@@ -458,6 +460,65 @@ async def _call_service(
     await hass.services.async_call(domain, service, data, blocking=True)
 
 
+async def _read_entity_states_after_settle(
+    hass: HomeAssistant, entity_ids: list[str]
+) -> dict[str, str]:
+    if LIGHT_STATE_SETTLE_SECONDS > 0:
+        await asyncio.sleep(LIGHT_STATE_SETTLE_SECONDS)
+    await hass.async_block_till_done()
+    actual_states: dict[str, str] = {}
+    for entity_id in entity_ids:
+        state = hass.states.get(entity_id)
+        actual_states[entity_id] = state.state if state is not None else "missing"
+    return actual_states
+
+
+def _partition_verified_targets(
+    entity_ids: list[str],
+    resolved_names: list[str],
+    actual_states: dict[str, str],
+    expected_state: str,
+) -> tuple[list[str], list[str], list[str], list[str]]:
+    name_by_entity: dict[str, str] = {}
+    for index, entity_id in enumerate(entity_ids):
+        fallback_name = entity_id
+        if index < len(resolved_names) and resolved_names[index]:
+            fallback_name = resolved_names[index]
+        name_by_entity[entity_id] = fallback_name
+
+    confirmed_ids: list[str] = []
+    confirmed_names: list[str] = []
+    failed_ids: list[str] = []
+    failed_names: list[str] = []
+    for entity_id in entity_ids:
+        display_name = name_by_entity[entity_id]
+        if actual_states.get(entity_id) == expected_state:
+            confirmed_ids.append(entity_id)
+            confirmed_names.append(display_name)
+        else:
+            failed_ids.append(entity_id)
+            failed_names.append(display_name)
+    return confirmed_ids, confirmed_names, failed_ids, failed_names
+
+
+def _verification_failure_message(
+    expected_state: str,
+    failed_names: list[str],
+    actual_states: dict[str, str],
+    failed_ids: list[str],
+) -> str:
+    joined_names = _display_targets(failed_names or failed_ids)
+    if expected_state == "off":
+        if failed_ids and all(actual_states.get(entity_id) == "on" for entity_id in failed_ids):
+            return f"{joined_names} turned back on after I tried to turn it off."
+        return f"{joined_names} did not stay off."
+    if expected_state == "on":
+        if failed_ids and all(actual_states.get(entity_id) == "off" for entity_id in failed_ids):
+            return f"{joined_names} turned back off after I tried to turn it on."
+        return f"{joined_names} did not stay on."
+    return f"{joined_names} did not stay at the requested state."
+
+
 async def _execute_control_lights(
     hass: HomeAssistant,
     parameters: dict[str, Any],
@@ -492,11 +553,36 @@ async def _execute_control_lights(
             except Exception:
                 pass
     await _call_service(hass, "light", service, data)
+    expected_state = "off" if service == "turn_off" else "on"
+    actual_states = await _read_entity_states_after_settle(hass, entity_ids)
+    confirmed_ids, confirmed_names, failed_ids, failed_names = _partition_verified_targets(
+        entity_ids, resolved_names, actual_states, expected_state
+    )
+    if failed_ids:
+        return ExecutedStep(
+            "lights",
+            confirmed_names,
+            confirmed_ids,
+            expected_state,
+            details={
+                "success": False,
+                "attempted_names": resolved_names or entity_ids,
+                "attempted_entity_ids": entity_ids,
+                "confirmed_names": confirmed_names,
+                "confirmed_entity_ids": confirmed_ids,
+                "failed_names": failed_names,
+                "failed_entity_ids": failed_ids,
+                "actual_states": actual_states,
+                "message": _verification_failure_message(
+                    expected_state, failed_names, actual_states, failed_ids
+                ),
+            },
+        )
     return ExecutedStep(
         "lights",
         resolved_names or entity_ids,
         entity_ids,
-        "off" if service == "turn_off" else "on",
+        expected_state,
     )
 
 
@@ -743,8 +829,10 @@ async def _execute_call_service_raw(
 
 def _tool_result_from_step(step: ExecutedStep) -> dict[str, Any]:
     """Convert an executed step into a tool result payload."""
+    details = dict(step.details or {})
+    success = bool(details.pop("success", True))
     result: dict[str, Any] = {
-        "success": True,
+        "success": success,
         "kind": step.kind,
         "names": step.names,
         "entity_ids": step.entity_ids,
@@ -753,8 +841,8 @@ def _tool_result_from_step(step: ExecutedStep) -> dict[str, Any]:
         result["state"] = step.state
     if step.seconds is not None:
         result["seconds"] = step.seconds
-    if step.details:
-        result.update(step.details)
+    if details:
+        result.update(details)
     return result
 
 
@@ -817,6 +905,10 @@ def describe_tool_call(tool_name: str, parameters: dict[str, Any]) -> str | None
 
 def describe_tool_execution_result(result: ToolExecutionResult) -> str | None:
     """Return a short narrated progress line for an executed tool step."""
+    if result.tool_result.get("success") is False:
+        message = result.tool_result.get("message")
+        if isinstance(message, str) and message.strip():
+            return message.strip()
     if result.step is None:
         requested_names = result.tool_result.get("requested_names") or []
         if requested_names:
@@ -990,22 +1082,35 @@ def summarize_execution_results(results: list[ToolExecutionResult]) -> str | Non
     if not results:
         return None
 
-    failures = [result for result in results if result.step is None]
-    steps = [result.step for result in results if result.step is not None]
+    failures = [result for result in results if result.tool_result.get("success") is not True]
+    steps = [
+        result.step
+        for result in results
+        if result.tool_result.get("success") is True and result.step is not None
+    ]
     success_summary = summarize_executed_steps(steps)
 
     if not failures:
         return success_summary
 
     failure_messages: list[str] = []
-    seen_failures: set[tuple[str, ...]] = set()
+    seen_failures: set[str] = set()
     for failure in failures:
+        explicit_message = failure.tool_result.get("message")
+        if isinstance(explicit_message, str) and explicit_message.strip():
+            message_key = explicit_message.strip()
+            if message_key in seen_failures:
+                continue
+            seen_failures.add(message_key)
+            failure_messages.append(message_key)
+            continue
         requested_names = tuple(
             str(name) for name in (failure.tool_result.get("requested_names") or [])
         )
-        if requested_names in seen_failures:
+        message_key = "|".join(requested_names)
+        if message_key in seen_failures:
             continue
-        seen_failures.add(requested_names)
+        seen_failures.add(message_key)
         if requested_names:
             joined_names = _display_targets(list(requested_names))
             message = (
